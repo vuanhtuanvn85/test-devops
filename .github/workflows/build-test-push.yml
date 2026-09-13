@@ -6,13 +6,18 @@ name: Build, Test and Push
 # Nhiệm vụ: build -> test -> đẩy image lên GHCR.
 # Đây là file tạo ra image thật để deploy.
 #
-# Phân vai với ci.yml:
-#   ci.yml              -> chạy trên Pull Request (gác cổng, KHÔNG push image)
-#   build-test-push.yml -> chạy khi push vào main (tạo image thật)
-# Hai file không bao giờ chạy cùng lúc.
+# CHIA 3 JOB (giống "stage" của GitLab):
 #
-# Đánh đổi của file này: BUILD 2 LẦN - một lần để test, một lần để push
-# (xem ghi chú ở bước 3). Đổi lại nó ngắn, đọc hết trong một lượt.
+#     build  ──►  test  ──►  push
+#
+# GitHub Actions không có khái niệm "stage" như GitLab. Thứ tự được tạo
+# bằng "needs:" - job khai báo needs sẽ chờ job kia xong mới chạy.
+# Không có needs thì các job chạy SONG SONG.
+#
+# LƯU Ý QUAN TRỌNG: mỗi job chạy trên MỘT MÁY ẢO RIÊNG, hoàn toàn mới.
+# Job sau không thấy file của job trước - kể cả code đã checkout.
+# Muốn chuyển file giữa job phải dùng artifact (upload/download).
+# GitLab tự động làm việc này, GitHub bắt khai báo tường minh.
 # ===================================================================
 
 # Khi nào chạy?
@@ -21,25 +26,107 @@ on:
     branches: [main]
   workflow_dispatch:   # thêm nút "Run workflow" trong tab Actions để chạy tay
 
-# Biến dùng chung
+# Biến dùng chung cho mọi job
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}/web
 
 jobs:
+  # =================================================================
+  # JOB 1: BUILD - đóng gói image rồi cất vào artifact
+  # =================================================================
+  # Chỉ build kiến trúc amd64 (đúng kiến trúc của runner) để test.
+  # Bản đa kiến trúc để job "push" lo - thấy lý do ở job đó.
   build:
     runs-on: ubuntu-latest
 
-    # Cấp quyền push image lên GHCR
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build ra file .tar thay vì push.
+      # outputs=type=docker đóng gói thành tarball mà "docker load" đọc được.
+      #
+      # Cache: lưu layer vào GitHub Actions cache để lần build sau nhanh hơn.
+      # mode=max cache cả layer trung gian, không chỉ layer cuối.
+      - name: Build image thành tarball
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: ${{ env.IMAGE_NAME }}:ci-${{ github.sha }}
+          outputs: type=docker,dest=/tmp/image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Đưa file .tar sang job sau. Đây là cách duy nhất để job "test"
+      # thấy được image mà job này vừa tạo.
+      - name: Cất image vào artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: /tmp/image.tar
+          retention-days: 1     # chỉ cần sống qua lượt chạy này
+
+  # =================================================================
+  # JOB 2: TEST - dựng stack từ image vừa build rồi kiểm tra
+  # =================================================================
+  # Điểm mấu chốt: test ĐÚNG image mà job build tạo ra, không build lại.
+  # Bản cũ (1 job) build 2 lần nên image được test và image được push
+  # về lý thuyết có thể khác nhau. Tách job đã sửa hẳn chuyện đó.
+  test:
+    needs: build              # ← chờ job build xong
+    runs-on: ubuntu-latest
+
+    steps:
+      # Vẫn phải checkout: máy ảo mới, chưa có docker-compose.yml lẫn script.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Lấy image từ artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image
+          path: /tmp
+
+      - name: Nạp image vào Docker
+        run: docker load -i /tmp/image.tar
+
+      # SMOKE_IMAGE bảo script dùng docker-compose.prod.yml (chạy image có
+      # sẵn) thay vì build từ source. Script kiểm tra 8 điểm, hỏng là dừng.
+      - name: Smoke test
+        run: |
+          chmod +x scripts/smoke-test.sh
+          SMOKE_IMAGE=${{ env.IMAGE_NAME }}:ci-${{ github.sha }} \
+            ./scripts/smoke-test.sh
+
+  # =================================================================
+  # JOB 3: PUSH - build bản đa kiến trúc rồi đẩy lên GHCR
+  # =================================================================
+  # Chỉ chạy khi test đạt. Test hỏng -> job này bị bỏ qua, GHCR không
+  # nhận image lỗi.
+  #
+  # VÌ SAO BUILD LẠI Ở ĐÂY?
+  # Job build chỉ tạo bản amd64 vì tarball KHÔNG chứa được manifest list
+  # (1 tag gộp nhiều kiến trúc) - định dạng đó chỉ tồn tại trên registry.
+  # Muốn có bản arm64 thì phải build và push thẳng.
+  #
+  # Nhờ cache-from: type=gha, toàn bộ layer amd64 lấy lại từ cache job 1,
+  # nên lần build này chỉ thực sự tốn công cho phần arm64.
+  push:
+    needs: test               # ← chờ job test xong
+    runs-on: ubuntu-latest
+
+    # Cấp quyền push image lên GHCR. Chỉ job này cần, 2 job kia không.
     permissions:
       contents: read
       packages: write
 
     steps:
-      # Bước 1: Lấy code từ repo
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Bước 2: Đăng nhập GHCR
       # secrets.GITHUB_TOKEN do GitHub tự cấp, không cần tự tạo secret
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -48,33 +135,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Bước 3: Chạy smoke test TRƯỚC khi push
-      # Script tự dựng Postgres + web rồi kiểm tra 8 điểm.
-      # Hỏng -> job dừng ngay, bước push bên dưới không chạy.
-      #
-      # LƯU Ý: script tự build từ source, nên đây là LẦN BUILD THỨ NHẤT.
-      # Bước 5 sẽ build lại lần nữa. Hai image đó thường giống nhau nhưng
-      # không có gì đảm bảo tuyệt đối. ci.yml giải quyết bằng cách build
-      # 1 lần rồi test đúng image đó.
-      - name: Smoke test
-        run: |
-          chmod +x scripts/smoke-test.sh
-          ./scripts/smoke-test.sh
-
-      # Bước 4: Cài QEMU để build được kiến trúc khác máy runner
-      # Runner là amd64; muốn có thêm bản arm64 (Mac M-series) thì cần giả lập.
+      # QEMU giả lập CPU để build được kiến trúc khác máy runner.
+      # Runner là amd64; muốn có bản arm64 (Mac M-series) thì cần giả lập.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # Bước 5: Tạo builder hỗ trợ đa kiến trúc
       # Driver "docker" mặc định chỉ build được 1 kiến trúc mỗi lần.
       # Action này dựng builder dùng driver "docker-container" - driver
       # duy nhất gộp được nhiều kiến trúc vào chung 1 tag.
-      # QEMU lo chạy binary khác kiến trúc, Buildx lo gộp - thiếu 1 trong 2 là hỏng.
+      # QEMU lo chạy binary khác kiến trúc, Buildx lo gộp - thiếu 1 là hỏng.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Bước 6: Build và push image đa kiến trúc
       # platforms tạo "manifest list": 1 tag chứa cả 2 bản.
       # Máy nào pull sẽ tự nhận đúng bản của máy đó.
       - name: Build and push
@@ -86,3 +158,5 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

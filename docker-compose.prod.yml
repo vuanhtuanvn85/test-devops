@@ -1,0 +1,33 @@
+# File ĐÈ (override) - dùng chung với docker-compose.yml, không thay thế nó.
+#
+# Mục đích: chạy một image CÓ SẴN thay vì build từ source.
+# Tag image lấy từ biến IMAGE_TAG, nên cùng file này chạy được mọi phiên bản.
+#
+# Cách chạy:
+#   IMAGE_TAG=ghcr.io/u/app:abc123 \
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Dùng ở hai chỗ:
+#   1. scripts/smoke-test.sh khi có biến SMOKE_IMAGE (test đúng image đã build)
+#   2. CI job "test" - tải image từ artifact rồi test chính image đó
+#
+# Khác docker-compose.ghcr.yml: file kia ghi cứng tag :latest cho người dùng
+# chạy tay; file này nhận tag qua biến để CI truyền vào.
+
+services:
+  web:
+    image: ${IMAGE_TAG}
+    # Xoá chỉ thị build của file gốc. Thiếu dòng này Compose vẫn có thể
+    # build lại từ source khi chạy kèm cờ --build.
+    build: !reset null
+    # Image đã có sẵn ở máy (docker load từ artifact), đừng đi tìm trên registry.
+    pull_policy: never
+    # Xoá tên cố định "dictionary-web" của file gốc.
+    # Tên cố định là tên DUY NHẤT trên cả máy Docker, nên nó vô hiệu hoá
+    # cờ -p của Compose: stack test và stack đang chạy sẽ tranh nhau tên
+    # và báo "container name is already in use". Bỏ đi để Compose tự đặt
+    # tên theo project (dictsmoke123-web-1), nhờ vậy chạy song song được.
+    container_name: !reset null
+
+  db:
+    container_name: !reset null

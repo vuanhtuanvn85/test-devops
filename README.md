@@ -146,11 +146,17 @@ curl http://localhost:$WEB_PORT/api/define/apple
 
 `/api/health` trả `db: connected` nghĩa là web đã nối được Postgres — đây là điểm hay hỏng nhất.
 
-Hoặc chạy bộ smoke test đầy đủ. Script tự dựng một stack riêng ở cổng khác (không đụng stack đang chạy), kiểm tra xong tự dọn:
+Hoặc chạy bộ smoke test đầy đủ (8 kiểm tra). Script tự dựng một stack riêng ở cổng khác, kiểm tra xong tự dọn — chạy song song được với stack đang mở:
 
 ```bash
+# Build từ source rồi test
 ./scripts/smoke-test.sh
+
+# Hoặc test một image có sẵn, không build lại (cách CI dùng)
+SMOKE_IMAGE=ghcr.io/vuanhtuanvn85/test-devops/web:latest ./scripts/smoke-test.sh
 ```
+
+Thoát mã `0` = tất cả đạt.
 
 ---
 
@@ -166,16 +172,42 @@ Sửa code  →  git push origin main  →  GitHub Actions  →  image trên GHC
 
 File [`.github/workflows/build-test-push.yml`](.github/workflows/build-test-push.yml), chạy khi push vào `main` (hoặc bấm tay ở tab **Actions** → **Run workflow**).
 
-| Bước | Việc | Vì sao cần |
-|---|---|---|
-| 1. Checkout | Lấy code | |
-| 2. Login GHCR | Đăng nhập registry | `secrets.GITHUB_TOKEN` do GitHub tự cấp, không cần tự tạo |
-| 3. Smoke test | Dựng stack, kiểm tra API | Hỏng → dừng ngay, **không push image lỗi** |
-| 4. Set up QEMU | Giả lập CPU khác kiến trúc | Runner là amd64, muốn build arm64 phải giả lập |
-| 5. Set up Buildx | Tạo builder `docker-container` | Driver mặc định **không** build được đa kiến trúc |
-| 6. Build and push | Build + đẩy lên GHCR | Tạo image thật để deploy |
+Pipeline chia **3 job** nối tiếp nhau:
 
-Bước 4 và 5 phải có **cả hai**. QEMU lo chạy binary khác kiến trúc, Buildx lo gộp nhiều kiến trúc vào chung một tag. Thiếu Buildx sẽ báo:
+```
+build  ──►  test  ──►  push
+```
+
+| Job | Việc | Chờ job |
+|---|---|---|
+| `build` | Build image → lưu thành `image.tar` → upload artifact | — |
+| `test` | Tải artifact → `docker load` → smoke test **chính image đó** | `build` |
+| `push` | Build bản đa kiến trúc → đẩy lên GHCR | `test` |
+
+Test hỏng → job `push` bị bỏ qua, **GHCR không nhận image lỗi**.
+
+Điểm mấu chốt của việc tách job: image được test **đúng là** image sẽ deploy. Bản một job trước đây build hai lần (một lần để test, một lần để push) nên hai image đó về lý thuyết có thể khác nhau.
+
+### Hai điều dễ vấp
+
+**1. Mỗi job chạy trên một máy ảo RIÊNG.** Job sau không thấy file của job trước — kể cả code đã checkout. Vì vậy job nào cũng phải `actions/checkout` lại, và muốn chuyển image giữa job phải dùng artifact (`upload-artifact` / `download-artifact`). GitLab tự lo việc này giữa các stage; GitHub bắt khai báo tường minh.
+
+**2. Job `push` vẫn phải build lại.** Tarball **không chứa được manifest list** (một tag gộp nhiều kiến trúc) — định dạng đó chỉ tồn tại trên registry. Nên job `build` chỉ tạo bản `amd64` để test, còn bản đa kiến trúc phải build và push thẳng.
+
+Chi phí này được giảm bằng `cache-from: type=gha`: layer `amd64` lấy lại từ cache của job `build`, chỉ phần `arm64` là thực sự tốn công.
+
+> Hệ quả cần biết: **bản `arm64` chưa từng được smoke test** — runner là `amd64`, chạy test trên `arm64` phải qua giả lập QEMU, rất chậm.
+
+### Về QEMU và Buildx
+
+Job `push` cần **cả hai**, thiếu một là hỏng:
+
+| Action | Vai trò |
+|---|---|
+| `setup-qemu-action` | Giả lập CPU để chạy binary khác kiến trúc |
+| `setup-buildx-action` | Tạo builder `docker-container` — driver duy nhất gộp được nhiều kiến trúc vào một tag |
+
+Thiếu Buildx sẽ báo:
 
 ```
 ERROR: Multi-platform build is not supported for the docker driver.
@@ -258,6 +290,7 @@ Lệnh này **xoá sạch dữ liệu**. Cân nhắc trước khi chạy.
 | Sửa `init.sql` mà không thấy đổi | Volume đã có dữ liệu | `docker compose down -v` rồi `up` |
 | Biến `${...}` rỗng khi `up` | Thiếu `.env` | `cp .env.example .env` |
 | CI lỗi *Multi-platform not supported* | Thiếu bước Buildx | Thêm `docker/setup-buildx-action@v3` trước bước build |
+| `container name is already in use` | `container_name` cố định là duy nhất trên toàn máy, làm vô hiệu cờ `-p` của Compose | File đè phải có `container_name: !reset null` (xem `docker-compose.prod.yml`) |
 
 ---
 
@@ -280,10 +313,19 @@ Lệnh này **xoá sạch dữ liệu**. Cân nhắc trước khi chạy.
 │   └── smoke-test.sh           # Dựng stack + kiểm tra API
 ├── Dockerfile                  # Build 2 stage: frontend → backend
 ├── docker-compose.yml          # Chạy từ source
-├── docker-compose.ghcr.yml     # File đè: chạy image từ GHCR
+├── docker-compose.ghcr.yml     # File đè: chạy image :latest từ GHCR
+├── docker-compose.prod.yml     # File đè: chạy image theo biến $IMAGE_TAG (CI dùng)
 ├── .env                        # Cấu hình thật
 └── .env.example                # Mẫu cấu hình
 ```
+
+**Ba file compose** làm ba việc khác nhau. `docker-compose.yml` là gốc, hai file kia là **file đè** — luôn dùng kèm file gốc, không thay thế nó:
+
+| File | Nguồn image | Dùng khi |
+|---|---|---|
+| `docker-compose.yml` | Build từ `Dockerfile` | Đang sửa code |
+| `docker-compose.ghcr.yml` | `ghcr.io/.../web:latest` (ghi cứng) | Chạy tay bản mới nhất |
+| `docker-compose.prod.yml` | Biến `$IMAGE_TAG` | CI, hoặc cố định một phiên bản |
 
 `Dockerfile` dùng **multi-stage build**: stage 1 build React, stage 2 chỉ lấy thư mục `dist` đã build sang image backend. Toolchain của Vite không lọt vào image cuối, nên image nhẹ hơn nhiều.
 
