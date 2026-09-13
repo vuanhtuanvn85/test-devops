@@ -1,0 +1,22 @@
+# File ĐÈ (override) - dùng chung với docker-compose.yml, không thay thế nó.
+#
+# Mục đích: chạy image đã build sẵn trên GitHub Actions thay vì build từ source.
+#
+# Cách chạy:
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+#
+# Compose gộp 2 file theo thứ tự, file sau đè file trước.
+# Ở đây "image" đè lên "build: ." nên Docker kéo image từ GHCR về chạy luôn.
+#
+# Muốn cố định phiên bản: đổi :latest thành tag SHA của commit, ví dụ
+#   ghcr.io/vuanhtuanvn85/test-devops/web:210580f9a51e115f9f447f3ce2ae3209b815a627
+# Tag SHA không bao giờ đổi -> chạy lại lúc nào cũng ra đúng bản đó.
+# Còn :latest sẽ trỏ sang image mới mỗi lần push vào main.
+
+services:
+  web:
+    image: ghcr.io/vuanhtuanvn85/test-devops/web:latest
+    # Xoá chỉ thị build của file gốc. Thiếu dòng này Compose v2 vẫn
+    # có thể build lại từ source khi chạy kèm cờ --build.
+    build: !reset null
+    pull_policy: always
