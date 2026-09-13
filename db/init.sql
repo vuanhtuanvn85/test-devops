@@ -17,5 +17,6 @@ INSERT INTO words (word, definition) VALUES
   ('flower',   'bông hoa'),
   ('guitar',   'đàn guitar'),
   ('house',    'ngôi nhà'),
+  ('internet', 'mạng internet'),
   ('juice',    'nước ép')
 ON CONFLICT (word) DO NOTHING;
