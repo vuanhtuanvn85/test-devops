@@ -66,7 +66,15 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # Bước 5: Build và push image đa kiến trúc
+      # Bước 5: Tạo builder hỗ trợ đa kiến trúc
+      # Driver "docker" mặc định chỉ build được 1 kiến trúc mỗi lần.
+      # Action này dựng builder dùng driver "docker-container" - driver
+      # duy nhất gộp được nhiều kiến trúc vào chung 1 tag.
+      # QEMU lo chạy binary khác kiến trúc, Buildx lo gộp - thiếu 1 trong 2 là hỏng.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Bước 6: Build và push image đa kiến trúc
       # platforms tạo "manifest list": 1 tag chứa cả 2 bản.
       # Máy nào pull sẽ tự nhận đúng bản của máy đó.
       - name: Build and push
