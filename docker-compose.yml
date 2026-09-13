@@ -1,0 +1,50 @@
+# Buổi 5 - Định nghĩa 2 dịch vụ: web (ứng dụng) và db (database)
+# Các biến ${...} được đọc tự động từ file .env cùng thư mục.
+
+services:
+  # ===== Dịch vụ WEB: React + Express =====
+  web:
+    build: .
+    container_name: dictionary-web
+    ports:
+      - "${WEB_PORT}:3000"
+    environment:
+      # DB_HOST là "db" - tên service bên dưới. Docker Compose tạo sẵn DNS nội bộ
+      # nên container web gọi được container db bằng tên, không cần biết IP.
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+    depends_on:
+      db:
+        # Chờ db thực sự sẵn sàng nhận kết nối, không chỉ chờ container khởi động.
+        # Thiếu dòng này web sẽ chạy trước và không query được database.
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ===== Dịch vụ DB: PostgreSQL =====
+  db:
+    image: postgres:16-alpine
+    container_name: dictionary-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Mở ra host để xem bằng DBeaver/pgAdmin. Có thể bỏ nếu không cần.
+      - "${DB_PORT}:5432"
+    volumes:
+      # Named volume: dữ liệu sống sót qua "docker compose down"
+      - pgdata:/var/lib/postgresql/data
+      # Migrate dữ liệu ban đầu: postgres tự chạy file .sql này khi volume còn rỗng
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
