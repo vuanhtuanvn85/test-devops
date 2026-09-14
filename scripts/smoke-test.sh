@@ -25,7 +25,21 @@ export POSTGRES_DB=${POSTGRES_DB:-testdict}
 # Chạy tay không có 2 biến này thì vẫn là "dictsmoke" như cũ.
 PROJECT="dictsmoke${BUILD_NUMBER:-${GITHUB_RUN_ID:-}}"
 COMPOSE="docker compose -p $PROJECT"
-BASE="http://localhost:${WEB_PORT}"
+
+# Gọi API bằng host nào?
+#   - Chạy tay ở máy / trên runner GitHub  -> localhost
+#   - Chạy TRONG container (Jenkins)       -> host.docker.internal
+#
+# Lý do: container "web" mở cổng ra HOST, không phải ra container Jenkins.
+# Đứng trong Jenkins mà gọi localhost là gọi chính nó -> không có gì trả lời.
+# Dấu hiệu nhận biết môi trường container: có file /.dockerenv.
+if [[ -f /.dockerenv ]] && getent hosts host.docker.internal >/dev/null 2>&1; then
+  HOST_ADDR="host.docker.internal"
+else
+  HOST_ADDR="localhost"
+fi
+BASE="http://${HOST_ADDR}:${WEB_PORT}"
+echo "=== Gọi API qua: $BASE"
 
 # Có SMOKE_IMAGE -> dùng file prod (chỉ pull/chạy image), không build.
 # Không có     -> dùng compose thường (build từ source) như trước nay.

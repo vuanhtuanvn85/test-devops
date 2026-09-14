@@ -106,15 +106,24 @@ pipeline {
         // Cache đẩy lên registry (tag :buildcache) để stage PUSH dùng lại,
         // không build lại từ đầu. Lần chạy sau cũng nhanh hơn nhờ cache này.
         //
-        // ignore-error=true: lần chạy ĐẦU TIÊN chưa có tag :buildcache trên
-        // registry, ghi cache có thể lỗi - nhưng đó không phải lỗi của build,
-        // nên bỏ qua thay vì làm hỏng cả stage.
+        // Lần chạy ĐẦU TIÊN chưa có tag :buildcache trên registry:
+        //   - cache-to  : ignore-error=true lo được (ghi lỗi thì bỏ qua)
+        //   - cache-from: KHÔNG có ignore-error -> báo "not found" và HỎNG build
+        // Nên phải kiểm tra tag tồn tại chưa rồi mới thêm --cache-from.
         sh """
+          CACHE_FROM=""
+          if docker buildx imagetools inspect ${CACHE_TAG} >/dev/null 2>&1; then
+            CACHE_FROM="--cache-from type=registry,ref=${CACHE_TAG}"
+            echo "Có cache trên registry -> dùng lại"
+          else
+            echo "Chưa có cache (lần chạy đầu) -> build từ đầu"
+          fi
+
           docker buildx build \
             --platform linux/${env.NATIVE_ARCH} \
             --tag ${env.TAG_SHA} \
-            --cache-from type=registry,ref=${CACHE_TAG} \
-            --cache-to   type=registry,ref=${CACHE_TAG},mode=max,ignore-error=true \
+            \$CACHE_FROM \
+            --cache-to type=registry,ref=${CACHE_TAG},mode=max,ignore-error=true \
             --load \
             .
         """
@@ -145,13 +154,20 @@ pipeline {
         // Bản native lấy lại từ cache (đúng layer vừa test), chỉ kiến trúc
         // còn lại phải build thêm.
         // Đã docker login ở stage Chuẩn bị nên không cần đăng nhập lại.
+        // Cũng kiểm tra cache như stage BUILD: nếu stage BUILD ghi cache lỗi
+        // thì tag :buildcache vẫn chưa tồn tại, --cache-from sẽ làm hỏng build.
         sh """
+          CACHE_FROM=""
+          if docker buildx imagetools inspect ${CACHE_TAG} >/dev/null 2>&1; then
+            CACHE_FROM="--cache-from type=registry,ref=${CACHE_TAG}"
+          fi
+
           docker buildx build \
             --platform ${PLATFORMS} \
             --tag ${env.TAG_SHA} \
             --tag ${env.TAG_LATEST} \
-            --cache-from type=registry,ref=${CACHE_TAG} \
-            --cache-to   type=registry,ref=${CACHE_TAG},mode=max,ignore-error=true \
+            \$CACHE_FROM \
+            --cache-to type=registry,ref=${CACHE_TAG},mode=max,ignore-error=true \
             --push \
             .
         """
