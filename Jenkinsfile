@@ -23,7 +23,7 @@ pipeline {
   environment {
     REGISTRY   = 'ghcr.io'
     // ĐỔI thành tài khoản GitHub của bạn (BẮT BUỘC viết thường)
-    IMAGE_NAME = 'vuanhtuan85/dictionary-app-5'
+    IMAGE_NAME = 'vuanhtuanvn85/test-devops'
     IMAGE      = "${REGISTRY}/${IMAGE_NAME}"
 
     // Credential kiểu "Username with password":
@@ -34,8 +34,11 @@ pipeline {
     // Các kiến trúc sẽ push lên registry
     PLATFORMS = 'linux/amd64,linux/arm64'
 
-    // Nơi lưu cache build, để stage PUSH dùng lại layer của stage BUILD
-    CACHE_DIR = '/tmp/buildx-cache-dictionary-app-5'
+    // Cache build lưu ngay trên registry (tag riêng ":buildcache").
+    // KHÔNG dùng thư mục local: builder "docker-container" chạy trong container
+    // BuildKit riêng, thư mục /tmp của nó không phải /tmp của Jenkins,
+    // và volume mount vào thuộc quyền root nên jenkins không ghi được.
+    CACHE_TAG = "${REGISTRY}/${IMAGE_NAME}:buildcache"
 
     // Cổng stack deploy thật (khác cổng smoke test 3999/55999 để không đụng nhau)
     DEPLOY_WEB_PORT = '3000'
@@ -75,6 +78,12 @@ pipeline {
         echo "Máy này   : linux/${env.NATIVE_ARCH}"
         echo "Sẽ push   : ${PLATFORMS}"
 
+        // Đăng nhập NGAY từ đầu vì stage BUILD đã cần ghi cache lên registry.
+        // --password-stdin: token không lộ trong log hay danh sách tiến trình.
+        sh '''
+          echo "$GHCR_CREDS_PSW" | docker login ${REGISTRY} -u "$GHCR_CREDS_USR" --password-stdin
+        '''
+
         // QEMU: cho phép build kiến trúc khác với máy hiện tại (giả lập).
         // Buildx builder: bắt buộc để build nhiều kiến trúc cùng lúc,
         // vì builder mặc định của Docker chỉ làm được 1 kiến trúc.
@@ -93,14 +102,19 @@ pipeline {
         echo "=== Build bản native (linux/${env.NATIVE_ARCH}) để test ==="
         // --load nạp image vào Docker local để stage TEST dùng được ngay.
         // --load chỉ nhận 1 kiến trúc, nên bản đa kiến trúc để dành stage PUSH.
-        // Cache ghi ra thư mục -> stage PUSH dùng lại, không build lại từ đầu.
+        //
+        // Cache đẩy lên registry (tag :buildcache) để stage PUSH dùng lại,
+        // không build lại từ đầu. Lần chạy sau cũng nhanh hơn nhờ cache này.
+        //
+        // ignore-error=true: lần chạy ĐẦU TIÊN chưa có tag :buildcache trên
+        // registry, ghi cache có thể lỗi - nhưng đó không phải lỗi của build,
+        // nên bỏ qua thay vì làm hỏng cả stage.
         sh """
-          mkdir -p ${CACHE_DIR}
           docker buildx build \
             --platform linux/${env.NATIVE_ARCH} \
             --tag ${env.TAG_SHA} \
-            --cache-from type=local,src=${CACHE_DIR} \
-            --cache-to   type=local,dest=${CACHE_DIR},mode=max \
+            --cache-from type=registry,ref=${CACHE_TAG} \
+            --cache-to   type=registry,ref=${CACHE_TAG},mode=max,ignore-error=true \
             --load \
             .
         """
@@ -130,15 +144,14 @@ pipeline {
         // "manifest list" (1 tag chứa nhiều kiến trúc) lên registry.
         // Bản native lấy lại từ cache (đúng layer vừa test), chỉ kiến trúc
         // còn lại phải build thêm.
-        // --password-stdin: token không lộ trong log hay danh sách tiến trình.
+        // Đã docker login ở stage Chuẩn bị nên không cần đăng nhập lại.
         sh """
-          echo "\$GHCR_CREDS_PSW" | docker login ${REGISTRY} -u "\$GHCR_CREDS_USR" --password-stdin
-
           docker buildx build \
             --platform ${PLATFORMS} \
             --tag ${env.TAG_SHA} \
             --tag ${env.TAG_LATEST} \
-            --cache-from type=local,src=${CACHE_DIR} \
+            --cache-from type=registry,ref=${CACHE_TAG} \
+            --cache-to   type=registry,ref=${CACHE_TAG},mode=max,ignore-error=true \
             --push \
             .
         """
