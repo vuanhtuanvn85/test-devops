@@ -1724,6 +1724,85 @@ docker exec ansible-web1   docker logs dictionary-web-1
 > `ansible-labnet`) còn `192.168.65.1` là **laptop** của bạn — hai nguồn
 > SSH khác nhau, nhận ra ngay ai đang vào máy.
 
+### 13b.0b. Docker Desktop KHÔNG thấy app của web1/web2
+
+Mở Docker Desktop tìm `dictionary-web-1` sẽ **không thấy**. Không phải lỗi
+giao diện — Docker Desktop **không thể** thấy nó.
+
+Docker Desktop chỉ nói chuyện với dockerd của laptop. App chạy trong một
+**dockerd thứ hai** nằm bên trong `ansible-web1`. Hai daemon riêng biệt,
+không biết gì về nhau:
+
+```bash
+docker ps                   # 6 container: jenkins, ansible-web1/2, ...
+                            # KHÔNG có dictionary-web-1
+
+docker exec ansible-web1 docker ps
+                            # dictionary-web-1, dictionary-db-1
+```
+
+Docker Desktop chỉ hiển thị được danh sách đầu. Muốn xem app thì **buộc phải
+dùng dòng lệnh** (mục 13b.1 hoặc 13b.2), hoặc SSH vào server (13b.3).
+
+> Đây không phải hạn chế của lab mà là bản chất: server thật cũng vậy. Docker
+> Desktop trên laptop bạn không bao giờ thấy container trên server production.
+> Lab chỉ mô phỏng đúng tình huống đó.
+
+### 13b.0c. Container `Up` nhưng app chết — `dockerd` không tự sống lại
+
+Triệu chứng rất dễ gây hoang mang:
+
+| Kiểm tra | Kết quả |
+| --- | --- |
+| `docker ps` | `ansible-web1  Up 2 minutes` ✅ |
+| `ansible all -m ping` | `SUCCESS` ✅ |
+| Cổng 8001/8002 | vẫn mở ✅ |
+| `curl localhost:8001` | **không trả lời** ❌ |
+| `docker exec ansible-web1 docker ps` | `Cannot connect to the Docker daemon` ❌ |
+
+Mọi thứ trông sống mà app thì chết.
+
+**Nguyên nhân:** container lab giả làm MÁY nhưng **không có systemd**. Máy thật
+khởi động lại thì systemd tự bật Docker. Container thì chỉ chạy đúng `CMD` —
+là `sshd`. `dockerd` do playbook `02-install-docker.yml` bật **thủ công** nên
+sau mỗi lần Docker Desktop (hoặc laptop) khởi động lại, nó **không sống lại**.
+
+`sshd` vẫn chạy → Ansible ping OK → tưởng server khoẻ. Nhưng tầng dưới đã chết.
+
+**Cách nhận ra ngay:**
+
+```bash
+ansible all -m shell -a "pgrep -x dockerd || echo 'DOCKERD CHET'" -b
+```
+
+**Cách sửa thủ công:**
+
+```bash
+cd ansible && ansible-playbook playbooks/02-install-docker.yml
+```
+
+Playbook idempotent nên chạy lại an toàn: nó thấy daemon chết và bật lại
+(`changed=1`), các bước cài đặt khác báo `ok`. App có `restart: unless-stopped`
+nên tự lên lại theo — không cần deploy lại.
+
+**Đã sửa tận gốc:** `lab/entrypoint.sh` đóng vai systemd tối giản — bật lại
+`dockerd` (nếu đã cài) rồi mới giao quyền cho `sshd`, cộng với
+`restart: unless-stopped` cho web1/web2. Giờ khởi động lại Docker Desktop thì
+app tự trở lại, không phải làm gì.
+
+Kiểm chứng:
+
+```bash
+docker restart ansible-web1 ansible-web2
+# chờ ~15s rồi:
+curl localhost:8001/api/health     # {"db":"connected","words":10}
+```
+
+> Vì sao entrypoint vẫn kiểm tra `command -v dockerd` thay vì cài luôn?
+> Để giữ nguyên bài học: **Ansible là thứ cài Docker**. Lần dựng lab đầu tiên
+> chưa có `dockerd`, entrypoint bỏ qua, và bạn vẫn phải chạy playbook 02 như
+> bài đã dạy.
+
 ### 13b.1. Cách nhanh nhất — Ansible hỏi cả hai server một lượt
 
 Đây là cách nên dùng, vì **so sánh được hai server cạnh nhau**:

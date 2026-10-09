@@ -183,7 +183,16 @@
 
     - name: Khởi động dockerd ở chế độ nền (vì lab không có systemd)
       # nohup + & : tiến trình sống tiếp sau khi SSH đóng
+      #
+      # Xoá pidfile mồ côi trước khi bật: container bị kill thì dockerd
+      # không kịp dọn /var/run/docker.pid, lần sau nó TỪ CHỐI khởi động với
+      #   "failed to start daemon ... process with PID 8 is still running"
+      # dù PID đó đã chết. Đến đây thì pgrep đã xác nhận không còn dockerd
+      # nào chạy, nên xoá là an toàn.
       ansible.builtin.shell: |
+        if ! pgrep -x dockerd >/dev/null 2>&1; then
+          rm -f /var/run/docker.pid
+        fi
         nohup dockerd > /var/log/dockerd.log 2>&1 &
       # when: chỉ chạy task này KHI điều kiện đúng.
       # docker_info.rc != 0 nghĩa là lệnh trên thất bại -> daemon chưa chạy.
