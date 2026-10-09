@@ -91,6 +91,21 @@
           Chạy trước: ansible-playbook playbooks/03-deploy-app.yml -e image_tag={{ image_tag }}
         success_msg: "Server đã có sẵn cấu hình, tiến hành nâng cấp"
 
+    # Image private thì phải đăng nhập trước khi pull, nếu không sẽ gặp:
+    #   Head "https://ghcr.io/v2/...": unauthorized
+    #
+    # Mỗi server có dockerd riêng nên phải login trên TỪNG server — việc
+    # Jenkins (hay laptop) đã login không giúp gì cho server.
+    #
+    # Image công khai thì bỏ qua task này nhờ "when".
+    - name: Đăng nhập registry GHCR
+      ansible.builtin.shell:
+        cmd: echo "{{ ghcr_token }}" | docker login ghcr.io -u "{{ ghcr_user }}" --password-stdin
+      when: ghcr_token is defined and ghcr_token | length > 0
+      # no_log: thiếu dòng này token hiện nguyên văn trong output.
+      no_log: true
+      changed_when: false
+
     - name: Kéo image mới về trước
       # Kéo TRƯỚC khi tắt container cũ -> thời gian gián đoạn ngắn nhất.
       # Nếu kéo sau, server sẽ chết suốt thời gian tải image.

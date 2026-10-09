@@ -324,30 +324,57 @@ pipeline {
               chmod 600 /tmp/ansible_lab_key
             '''
 
-            // Deploy lần đầu: 03 tạo thư mục, .env, db, compose files.
-            // Idempotent nên chạy lại vô hại — lần sau chỉ sinh .env mới.
+            // ===== TOKEN GHCR: vì sao web1/web2 cũng cần? =====
+            // Stage 4 pull được image là nhờ Jenkins đã "docker login" ở
+            // stage Chuẩn bị. Nhưng login đó nằm trong Docker của LAPTOP.
+            // web1/web2 có dockerd RIÊNG, hoàn toàn không biết gì về nó.
             //
-            // Vì sao vẫn cần 03 khi đã có 04? Vì 04 chỉ recreate service
-            // "web", nó giả định db và .env đã tồn tại. Server mới tinh
-            // chưa có gì thì 04 sẽ dừng ở task assert.
-            sh """
-              ansible-playbook \
-                -i inventory/hosts-ci.ini \
-                playbooks/03-deploy-app.yml \
-                -e image_tag=${env.TAG_SHA} \
-                -e ansible_ssh_private_key_file=/tmp/ansible_lab_key
-            """
+            // Package private + server chưa login =
+            //     Head "https://ghcr.io/v2/...": unauthorized
+            //
+            // Nên phải truyền token xuống để task "Đăng nhập registry GHCR"
+            // trong playbook 03 chạy (task đó có when: ghcr_token is defined,
+            // không truyền thì nó skip).
+            //
+            // CÁCH TRUYỀN AN TOÀN — ba lớp bảo vệ:
+            //   1. Dùng '...' (nháy đơn) để GROOVY không nội suy token vào
+            //      chuỗi. Dùng "..." thì giá trị thật bị nhúng vào lệnh và
+            //      hiện nguyên văn trong log Jenkins.
+            //   2. Truyền qua BIẾN MÔI TRƯỜNG, không viết thẳng giá trị lên
+            //      dòng lệnh — tránh lộ trong `ps aux` của máy đích.
+            //   3. Playbook đã có no_log: true ở task login.
+            withEnv(["TAG_SHA=${env.TAG_SHA}"]) {
+              // Deploy lần đầu: 03 tạo thư mục, .env, db, compose files.
+              // Idempotent nên chạy lại vô hại — lần sau chỉ sinh .env mới.
+              //
+              // Vì sao vẫn cần 03 khi đã có 04? Vì 04 chỉ recreate service
+              // "web", nó giả định db và .env đã tồn tại. Server mới tinh
+              // chưa có gì thì 04 sẽ dừng ở task assert.
+              sh '''
+                ansible-playbook \
+                  -i inventory/hosts-ci.ini \
+                  playbooks/03-deploy-app.yml \
+                  -e image_tag="$TAG_SHA" \
+                  -e ghcr_user="$GHCR_CREDS_USR" \
+                  -e ghcr_token="$GHCR_CREDS_PSW" \
+                  -e ansible_ssh_private_key_file=/tmp/ansible_lab_key
+              '''
 
-            // Rolling update: web1 xong và KHỎE rồi mới sang web2.
-            // Chạy ngay sau 03 để minh họa — thực tế các lần deploy sau
-            // chỉ cần chạy 04 là đủ.
-            sh """
-              ansible-playbook \
-                -i inventory/hosts-ci.ini \
-                playbooks/04-rolling-update.yml \
-                -e image_tag=${env.TAG_SHA} \
-                -e ansible_ssh_private_key_file=/tmp/ansible_lab_key
-            """
+              // Rolling update: web1 xong và KHỎE rồi mới sang web2.
+              // Chạy ngay sau 03 để minh họa — thực tế các lần deploy sau
+              // chỉ cần chạy 04 là đủ.
+              //
+              // 04 cũng cần token: nó có task "Kéo image mới về trước".
+              sh '''
+                ansible-playbook \
+                  -i inventory/hosts-ci.ini \
+                  playbooks/04-rolling-update.yml \
+                  -e image_tag="$TAG_SHA" \
+                  -e ghcr_user="$GHCR_CREDS_USR" \
+                  -e ghcr_token="$GHCR_CREDS_PSW" \
+                  -e ansible_ssh_private_key_file=/tmp/ansible_lab_key
+              '''
+            }
           }
         }
       }
