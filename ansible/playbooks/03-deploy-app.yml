@@ -15,7 +15,7 @@
 #
 # Chạy với image thật từ GHCR:
 #   ansible-playbook playbooks/03-deploy-app.yml \
-#     -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:abc1234
+#     -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:$(git rev-parse --short=7 HEAD)
 #
 # Chạy với mật khẩu mã hóa bằng Vault:
 #   ansible-playbook playbooks/03-deploy-app.yml --ask-vault-pass
@@ -62,7 +62,7 @@
     postgres_password: "{{ vault_postgres_password | default('dictpass') }}"
 
     # Image sẽ chạy. Rỗng = build từ source, có giá trị = kéo từ registry.
-    # Truyền từ dòng lệnh: -e image_tag=ghcr.io/user/app:abc1234
+    # Truyền từ dòng lệnh: -e image_tag=ghcr.io/user/app:<sha>  (xem huong-dan muc 7.1b)
     image_tag: ""
 
     # Tên project compose — quyết định tiền tố tên container.

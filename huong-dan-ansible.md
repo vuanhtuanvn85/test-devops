@@ -494,7 +494,7 @@ là cách chờ đúng, thay vì `sleep 30` đoán bừa.
 
 ```bash
 ansible-playbook playbooks/03-deploy-app.yml \
-  -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:abc1234
+  -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:$(git rev-parse --short=7 HEAD)
 ```
 
 > **Vì sao BẮT BUỘC có `-e image_tag=...`?**
@@ -653,7 +653,7 @@ Chạy lại **đúng lệnh cũ, cùng `image_tag`**:
 
 ```bash
 ansible-playbook playbooks/03-deploy-app.yml \
-  -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:abc1234
+  -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:$(git rev-parse --short=7 HEAD)
 ```
 
 `changed=0`. App **không bị restart** vì không có gì thay đổi. Đây là lý do
@@ -1106,7 +1106,14 @@ cd jenkins && docker compose up -d --build
 | Loại                  | ID                   | Nội dung                                    |
 | ---------------------- | -------------------- | -------------------------------------------- |
 | Secret file            | `ansible-lab-key`  | File`~/.ssh/ansible_lab`                   |
-| Username with password | `ghcr-credentials` | Tài khoản GHCR (đã có từ bài Jenkins) |
+| Username with password | `ghcr-credentials` | user GitHub + PAT (đã có từ bài Jenkins) |
+
+PAT cần quyền **`write:packages`** (để Jenkins push) và **`read:packages`**
+(để web1/web2 pull). Thiếu `read:packages` thì build qua được stage PUSH nhưng
+chết ở stage 7 với lỗi `unauthorized` — xem mục 13.
+
+Credential `ghcr-credentials` được dùng ở **hai nơi**: Jenkins tự login để
+push, và stage 7 truyền xuống web1/web2 để chúng login mà pull.
 
 Manage Jenkins → Credentials → Add.
 
@@ -1240,7 +1247,7 @@ cùng restart một lúc, có vài giây không server nào phục vụ. Ngườ
 
 ```bash
 ansible-playbook playbooks/04-rolling-update.yml \
-  -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:abc1234
+  -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:$(git rev-parse --short=7 HEAD)
 ```
 
 Mở [ansible/playbooks/04-rolling-update.yml](ansible/playbooks/04-rolling-update.yml).
@@ -1370,6 +1377,68 @@ thì phải thêm tay.
 
 > **Bài học mang đi:** mỗi khi dùng `ssh -i`, hãy kèm `IdentitiesOnly=yes`.
 > Nó biến `-i` từ *"gợi ý thử khóa này"* thành *"chỉ dùng khóa này"*.
+
+### `Head "https://ghcr.io/v2/...": unauthorized` khi server pull image
+
+```
+fatal: [web1]: FAILED! => {"cmd": ["docker", "pull", "ghcr.io/..."],
+"stderr": "Error response from daemon:
+Head \"https://ghcr.io/v2/.../manifests/9751e3e\": unauthorized"}
+```
+
+**Điều gây bối rối nhất:** Jenkins vừa pull **thành công** image đó ở stage 4,
+mà web1/web2 lại báo `unauthorized` với đúng image ấy.
+
+**Nguyên nhân.** `docker login` của Jenkins nằm trong Docker của **laptop**.
+web1/web2 có `dockerd` **riêng**, không biết gì về login đó.
+
+Nói cách khác: **đăng nhập registry là việc của từng máy**. N máy cần N lần
+login. Đây là điều rất dễ quên khi chuyển từ "deploy 1 máy" sang "deploy N máy".
+
+**Cách sửa — truyền token xuống server.** Playbook đã có task sẵn:
+
+```yaml
+- name: Đăng nhập registry GHCR
+  ansible.builtin.shell:
+    cmd: echo "{{ ghcr_token }}" | docker login ghcr.io -u "{{ ghcr_user }}" --password-stdin
+  when: ghcr_token is defined and ghcr_token | length > 0
+  no_log: true
+```
+
+Thấy `skipping:` ở task này nghĩa là **chưa truyền `ghcr_token`** → task không
+chạy → pull thất bại. Truyền vào:
+
+```bash
+ansible-playbook playbooks/03-deploy-app.yml \
+  -e image_tag=$IMG \
+  -e ghcr_user=<user> -e ghcr_token=<PAT>
+```
+
+Trong Jenkins thì dùng credential, và phải cẩn thận **3 lớp** để token không lộ:
+
+```groovy
+withEnv(["TAG_SHA=${env.TAG_SHA}"]) {
+  sh '''
+    ansible-playbook ... \
+      -e ghcr_token="$GHCR_CREDS_PSW"
+  '''
+}
+```
+
+| Lớp | Tác dụng |
+| --- | --- |
+| `'...'` nháy đơn | Groovy KHÔNG nội suy token vào chuỗi → không hiện trong log Jenkins |
+| Biến môi trường | Không viết giá trị lên dòng lệnh → không lộ trong `ps aux` của máy đích |
+| `no_log: true` | Ansible không in nội dung task ra output |
+
+Dùng `"..."` (nháy kép) là **sai nghiêm trọng**: Groovy thay `$GHCR_CREDS_PSW`
+bằng giá trị thật trước khi chạy, token hiện nguyên văn trong console log mà
+ai xem Jenkins cũng đọc được.
+
+**Cách nhanh hơn (đánh đổi):** đổi package thành public trên GitHub
+(Packages → package → Package settings → Change visibility). Không cần token,
+nhưng image của bạn ai cũng tải được, và bỏ qua bài học "server phải có
+credential riêng". Production thì gần như luôn dùng registry private.
 
 ### `failed to solve: mount source: "overlay" ... invalid argument`
 
