@@ -1748,6 +1748,60 @@ dùng dòng lệnh** (mục 13b.1 hoặc 13b.2), hoặc SSH vào server (13b.3).
 > Desktop trên laptop bạn không bao giờ thấy container trên server production.
 > Lab chỉ mô phỏng đúng tình huống đó.
 
+### 13b.0bb. `kex_exchange_identification: invalid protocol identifier "GET / HTTP/1.1"`
+
+```
+kex_exchange_identification: client sent invalid protocol identifier "GET / HTTP/1.1"
+banner exchange: Connection from 192.168.65.1 port 48880: invalid format
+```
+
+**Đây không phải lỗi app, cũng không phải lỗi SSH.** Nó nghĩa là: bạn vừa gửi
+**HTTP vào cổng SSH**.
+
+Dịch nghĩa thông báo: sshd chờ client chào bằng giao thức SSH
+(`SSH-2.0-OpenSSH_...`), nhưng nhận được `GET / HTTP/1.1` — đó là browser.
+
+**Nguyên nhân thường gặp nhất:** mở `http://localhost:2201`, hoặc bấm vào cổng
+`2201` trong Docker Desktop.
+
+Docker Desktop chính là cái bẫy ở đây — nó hiện **cả hai** cổng cạnh nhau mà
+không nói cái nào dùng được bằng browser:
+
+```
+0.0.0.0:2201->22/tcp      <- SSH. Bấm vào -> ra lỗi trên
+0.0.0.0:8001->3000/tcp    <- APP. Cái cần bấm
+```
+
+| Mở bằng browser | Kết quả |
+| --- | --- |
+| `http://localhost:2201` | **Sai** — lỗi `kex_exchange_identification` |
+| `http://localhost:8001` | **Đúng** — app từ điển của web1 |
+| `http://localhost:8002` | **Đúng** — app từ điển của web2 |
+
+Cổng 2201/2202 chỉ dùng cho SSH:
+
+```bash
+ssh -i ~/.ssh/ansible_lab -o IdentitiesOnly=yes -p 2201 deploy@localhost
+```
+
+> **Mẹo nhớ:** `22xx` là họ hàng của cổng 22 (SSH). `80xx` là họ hàng của 80
+> (HTTP). Nhìn số là biết mở bằng gì.
+
+Lỗi này **vô hại** — sshd chỉ từ chối kết nối sai giao thức rồi tiếp tục chạy
+bình thường. Nhưng nó làm log sshd đầy rác và dễ khiến bạn tưởng server hỏng.
+
+**Vài dòng khác trong log sshd cũng trông đáng lo mà thực ra bình thường:**
+
+| Dòng log | Nghĩa |
+| --- | --- |
+| `Received signal 15; terminating.` | Container được yêu cầu dừng (signal 15 = SIGTERM). Đây là `docker restart`/`stop` — dừng **đúng cách**, không phải crash |
+| `Received disconnect ...: disconnected by user` | Ansible xong việc và đóng kết nối. Mỗi task là một phiên SSH nên dòng này xuất hiện liên tục |
+| `Connection closed by 192.168.65.1` | Thường là healthcheck hoặc `nc` thăm cổng rồi ngắt ngay |
+| `Accepted publickey for deploy from 172.18.0.4` | **Jenkins** đang SSH vào (IP trong mạng `ansible-labnet`) |
+| `Accepted publickey for deploy from 192.168.65.1` | **Laptop** của bạn đang SSH vào |
+
+Hai IP cuối rất hữu ích khi gỡ lỗi: biết ngay ai đang tác động lên server.
+
 ### 13b.0c. Container `Up` nhưng app chết — `dockerd` không tự sống lại
 
 Triệu chứng rất dễ gây hoang mang:
@@ -1975,7 +2029,8 @@ build xong thì dùng cách 13b.1 từ laptop.
 | Deploy xong mà vẫn bản cũ | `docker ps` xem cột IMAGE — tag có đổi không |
 | Thấy log SSH thay vì log app | Xem [13b.0](#13b0-cái-bẫy-lớn-nhất-hai-tầng-container) — gõ sai tầng container |
 | Docker Desktop không thấy app | Bình thường — xem [13b.0b](#13b0b-docker-desktop-không-thấy-app-của-web1web2) |
-| Container `Up` mà app chết, ping vẫn OK | `dockerd` chết — xem [13b.0c](#13b0c-container-up-nhưng-app-chết--dockerd-không-tự-sống-lại) |
+| Container `Up` mà app chết, ping vẫn OK | `dockerd` chết — xem [13b.0c](#13b0c-container-up-nhưng-app-chết-dockerd-không-tự-sống-lại) |
+| `invalid protocol identifier "GET / HTTP/1.1"` | Mở HTTP vào cổng SSH — xem [13b.0bb](#13b0bb-kex_exchange_identification-invalid-protocol-identifier-get-http11) |
 
 ### 13b.7. Đọc access log
 
