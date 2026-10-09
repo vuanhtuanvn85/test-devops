@@ -232,9 +232,22 @@
   handlers:
     - name: Khoi dong lai ung dung
       ansible.builtin.command:
+        # CHỈ recreate service "web", KHÔNG chạm "db" — hai lý do:
+        #
+        # 1. Database restart là chuyện lớn: mất kết nối đang mở, có nguy cơ
+        #    mất dữ liệu. File .env đổi thì web cần đọc lại, db thì không.
+        #
+        # 2. Recreate CẢ STACK ngay sau khi task "Dựng ứng dụng" vừa tạo
+        #    container sẽ đua nhau (race). Với storage driver vfs của lab,
+        #    container ID kịp đổi giữa lúc compose đang xử lý -> lỗi:
+        #        Error response from daemon: No such container: 689c235...
+        #    và để lại container mồ côi tên "689c235..._dictionary-web-1".
+        #
+        # Dọn container mồ côi nếu gặp lỗi đó:
+        #   docker exec ansible-web1 docker rm -f <ten_container_la>
         cmd: >-
           docker compose -p {{ compose_project }}
           -f docker-compose.yml
           {{ '-f docker-compose.prod.yml -f docker-compose.ansible.yml' if image_tag | length > 0 else '' }}
-          up -d --force-recreate
+          up -d --force-recreate web
         chdir: "{{ app_dir }}"

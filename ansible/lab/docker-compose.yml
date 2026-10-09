@@ -8,8 +8,23 @@
 # Script đó sinh khóa SSH trước, vì Dockerfile cần file authorized_keys.
 #
 # Sau khi dựng:
-#   web1 -> ssh deploy@localhost -p 2201
-#   web2 -> ssh deploy@localhost -p 2202
+#   web1 -> ssh deploy@localhost -p 2201   | app: http://localhost:8001
+#   web2 -> ssh deploy@localhost -p 2202   | app: http://localhost:8002
+#
+# ===== VÌ SAO CẦN HAI LOẠI CỔNG? =====
+# 2201/2202 -> cổng 22: để Ansible SSH vào QUẢN LÝ server.
+# 8001/8002 -> cổng 3000: để MỞ BẰNG BROWSER xem app chạy.
+#
+# Thiếu 8001/8002 thì app vẫn chạy đúng, Ansible vẫn kiểm tra được
+# (nó curl từ BÊN TRONG server), nhưng bạn không mở được từ laptop.
+#
+# Vì sao 8001/8002 mà không phải 3000/3001?
+#   Cổng 3000 trên laptop đã bị stack "dictionary-prod" của Jenkins
+#   (stage 5) chiếm. Dùng dãy 800x để không ai đụng ai, và khi demo thì
+#   phân biệt rõ ràng ba thứ khác nhau:
+#       localhost:3000 -> app trên LAPTOP    (Jenkins stage 5)
+#       localhost:8001 -> app trên WEB1      (Ansible stage 7)
+#       localhost:8002 -> app trên WEB2      (Ansible stage 7)
 
 services:
   web1:
@@ -20,6 +35,8 @@ services:
       # 2201 trên laptop -> 22 trong container.
       # Ansible sẽ kết nối tới localhost:2201.
       - "2201:22"
+      # 8001 trên laptop -> 3000 trong container (app từ điển).
+      - "8001:3000"
     # privileged: cần cho Bài 4 — chạy Docker BÊN TRONG server ảo này.
     # Server thật không cần dòng này; đây là cái giá của việc giả lập máy.
     privileged: true
@@ -32,6 +49,7 @@ services:
     hostname: web2
     ports:
       - "2202:22"
+      - "8002:3000"
     privileged: true
     networks:
       - labnet
