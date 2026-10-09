@@ -1798,6 +1798,32 @@ docker restart ansible-web1 ansible-web2
 curl localhost:8001/api/health     # {"db":"connected","words":10}
 ```
 
+**Một biến thể khó hơn: pidfile mồ côi.** Container bị kill thì `dockerd` không
+kịp dọn `/var/run/docker.pid`. Lần sau nó **từ chối khởi động**:
+
+```
+failed to start daemon, ensure docker is not running or delete
+/var/run/docker.pid: process with PID 8 is still running
+```
+
+trong khi PID đó đã chết từ lâu. Triệu chứng giống hệt phần trên, nhưng chạy
+lại playbook 02 kiểu cũ cũng **không cứu được** — vì nó chỉ gọi `dockerd` rồi
+daemon lại tự thoát.
+
+Cả `entrypoint.sh` và playbook 02 giờ đều xoá pidfile trước khi bật (chỉ xoá
+sau khi `pgrep` xác nhận không còn `dockerd` nào chạy). Xem dấu vết trong log:
+
+```bash
+docker logs ansible-web1 | grep entrypoint
+```
+
+```
+[entrypoint] Xoá pidfile mồ côi (PID 1134)
+[entrypoint] Bật lại dockerd...
+[entrypoint] dockerd sẵn sàng sau 1s
+[entrypoint] Khởi động sshd
+```
+
 > Vì sao entrypoint vẫn kiểm tra `command -v dockerd` thay vì cài luôn?
 > Để giữ nguyên bài học: **Ansible là thứ cài Docker**. Lần dựng lab đầu tiên
 > chưa có `dockerd`, entrypoint bỏ qua, và bạn vẫn phải chạy playbook 02 như
@@ -1948,6 +1974,8 @@ build xong thì dùng cách 13b.1 từ laptop.
 | Container `Created` mà không `Up` | Log **dockerd** |
 | Deploy xong mà vẫn bản cũ | `docker ps` xem cột IMAGE — tag có đổi không |
 | Thấy log SSH thay vì log app | Xem [13b.0](#13b0-cái-bẫy-lớn-nhất-hai-tầng-container) — gõ sai tầng container |
+| Docker Desktop không thấy app | Bình thường — xem [13b.0b](#13b0b-docker-desktop-không-thấy-app-của-web1web2) |
+| Container `Up` mà app chết, ping vẫn OK | `dockerd` chết — xem [13b.0c](#13b0c-container-up-nhưng-app-chết--dockerd-không-tự-sống-lại) |
 
 ### 13b.7. Đọc access log
 
