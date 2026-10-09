@@ -5,6 +5,38 @@ const pool = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ===================================================================
+// ACCESS LOG — ghi lại MỌI request
+// ===================================================================
+// Vì sao cần? Không có nó, `docker logs` chỉ hiện đúng một dòng
+// "Server đang chạy..." lúc khởi động. Tra từ cả trăm lần cũng không
+// sinh thêm dòng nào -> không biết app có nhận được request không,
+// request nào chậm, request nào lỗi.
+//
+// VỊ TRÍ QUAN TRỌNG: middleware phải đặt TRƯỚC mọi app.get(...).
+// Express chạy middleware theo đúng thứ tự khai báo; đặt sau route thì
+// request đã được trả về rồi, middleware không bao giờ chạy tới.
+//
+// Dùng res.on('finish') thay vì log ngay: lúc đó mới biết status code
+// và tính được thời gian xử lý thật.
+//
+// HOSTNAME: in tên máy để biết server NÀO trả lời. Khi có 2 server trở
+// lên, đây là thứ giúp phân biệt log của web1 với web2.
+const os = require('os');
+const HOSTNAME = os.hostname();
+
+app.use((req, res, next) => {
+  const batDau = Date.now();
+  res.on('finish', () => {
+    const thoiGian = Date.now() - batDau;
+    console.log(
+      `[${new Date().toISOString()}] ${HOSTNAME} ` +
+      `${req.method} ${req.originalUrl} ${res.statusCode} ${thoiGian}ms`
+    );
+  });
+  next();
+});
+
 // LIVENESS probe (Kubernetes): "tiến trình Node còn sống không?"
 // Luôn trả 200 nếu server còn chạy - KHÔNG hỏi database.
 //
@@ -65,5 +97,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server đang chạy tại http://localhost:${PORT}`);
+  console.log(`Server đang chạy tại http://localhost:${PORT} (container ${HOSTNAME})`);
 });
