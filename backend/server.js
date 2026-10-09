@@ -5,7 +5,21 @@ const pool = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// LIVENESS probe (Kubernetes): "tiến trình Node còn sống không?"
+// Luôn trả 200 nếu server còn chạy - KHÔNG hỏi database.
+//
+// Vì sao tách khỏi /api/health? Liveness hỏng => K8s GIẾT container và khởi động lại.
+// Nếu liveness đi hỏi database, lúc db khởi động chậm thì web bị restart liên tục
+// (CrashLoopBackOff) dù bản thân nó hoàn toàn khoẻ. Restart web không sửa được db.
+app.get('/healthz', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
 // API: kiểm tra kết nối database (dùng cho badge trạng thái trên web)
+// Kiêm luôn READINESS probe (Kubernetes): "pod này nhận request được chưa?"
+// Readiness hỏng => K8s chỉ GỠ pod khỏi Service, không giết. Đúng với trường hợp
+// db chưa sẵn sàng: chờ db lên là pod tự được nhận request trở lại.
+// Trả 503 khi mất db chính là điều readiness cần.
 app.get('/api/health', async (req, res) => {
   try {
     const result = await pool.query('SELECT COUNT(*) FROM words');

@@ -1,0 +1,126 @@
+# StatefulSet = Deployment dành cho ứng dụng CÓ TRẠNG THÁI (database, message queue...).
+#
+# Đối chiếu Docker Compose: service "db" + named volume "pgdata".
+#
+# Vì sao Postgres dùng StatefulSet mà không dùng Deployment?
+#   1. Tên pod ỔN ĐỊNH và đánh số: db-0, db-1... (Deployment đặt tên ngẫu nhiên
+#      kiểu web-7d4b9c-x2kfp, restart lại là đổi tên).
+#   2. Mỗi pod có ổ đĩa RIÊNG đi theo nó suốt đời qua volumeClaimTemplates.
+#      Pod db-0 chết, sinh lại vẫn là db-0 và gắn đúng ổ đĩa cũ -> dữ liệu còn nguyên.
+#   3. Khởi động/xoá TUẦN TỰ, không đồng loạt - quan trọng với cụm database.
+#
+# Nếu dùng Deployment + PVC dùng chung: scale lên 2 replica là hai tiến trình Postgres
+# cùng ghi vào MỘT thư mục dữ liệu -> hỏng database ngay lập tức.
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: dictionary
+spec:
+  # Trỏ tới Service headless ở file 12-db-service.yaml. StatefulSet bắt buộc có.
+  serviceName: db
+
+  # Database KHÔNG scale ngang được kiểu này. Giữ đúng 1.
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: db
+
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+
+          ports:
+            - name: postgres
+              containerPort: 5432
+
+          env:
+            # Lấy user/password TỪ SECRET - không viết thẳng vào file này.
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dictionary-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dictionary-secret
+                  key: POSTGRES_PASSWORD
+            # Tên database lấy từ ConfigMap (không nhạy cảm).
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: dictionary-config
+                  key: DB_NAME
+
+            # Image postgres mặc định ghi dữ liệu vào /var/lib/postgresql/data.
+            # Nhưng ổ đĩa K8s cấp thường có sẵn thư mục "lost+found" bên trong,
+            # mà Postgres đòi thư mục dữ liệu phải RỖNG -> lỗi khởi tạo.
+            # Cách xử lý chuẩn: cho Postgres ghi vào thư mục con "pgdata".
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+
+          volumeMounts:
+            # Ổ đĩa bền, sinh ra từ volumeClaimTemplates bên dưới.
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            # ConfigMap init.sql mount thành FILE. Postgres tự chạy mọi file .sql
+            # trong thư mục này - CHỈ ở lần khởi tạo đầu tiên, khi ổ đĩa còn rỗng.
+            - name: db-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+
+          # readinessProbe: "đã nhận kết nối được chưa?" - hỏng thì bị gỡ khỏi Service.
+          # Đây chính là bản K8s của "healthcheck + depends_on: service_healthy"
+          # trong docker-compose.yml.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+
+          # livenessProbe: "tiến trình còn sống không?" - hỏng thì bị GIẾT và restart.
+          # Để thưa hơn readiness và cho nhiều lần thử: giết nhầm một database
+          # đang bận tốn kém hơn nhiều so với chờ thêm vài giây.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              # Cố ý KHÔNG đặt limits.cpu: chạm trần CPU thì bị bóp (throttle) chứ
+              # không bị giết, khiến database chậm bất thường rất khó chẩn đoán.
+
+      volumes:
+        - name: db-init
+          configMap:
+            name: db-init
+
+  # volumeClaimTemplates = "mỗi pod tự xin một ổ đĩa riêng".
+  # K8s tạo PVC tên pgdata-db-0 cho pod db-0.
+  #
+  # LƯU Ý QUAN TRỌNG: xoá StatefulSet KHÔNG xoá PVC (cố ý, để tránh mất dữ liệu).
+  # Muốn xoá sạch phải làm tay:  kubectl delete pvc pgdata-db-0 -n dictionary
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

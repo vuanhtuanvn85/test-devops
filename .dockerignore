@@ -15,3 +15,18 @@ npm-debug.log
 # init.sql thuộc về service db, được mount qua volume chứ không nằm trong image web
 db/
 docker-compose.yml
+
+# ===== Thêm ở buổi 7 (Terraform) =====
+# Thư mục terraform/ chứa .terraform/ với plugin provider nặng ~60MB.
+# Terraform build image bằng cách nén TOÀN BỘ build context thành file tar -
+# nếu để nguyên, nó nén cả chính thư mục provider của mình vào, vừa chậm
+# vừa lỗi "archive/tar: invalid tar header".
+# Nói chung: build context phải chỉ chứa thứ cần để build image.
+terraform/
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# macOS
+.DS_Store

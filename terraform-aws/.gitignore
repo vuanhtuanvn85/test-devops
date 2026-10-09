@@ -1,0 +1,45 @@
+# ============================================================
+# .gitignore cho Terraform - đọc kỹ phần lý do, đây là chỗ hay sai nhất
+# ============================================================
+
+# ----- STATE FILE: TUYỆT ĐỐI KHÔNG COMMIT -----
+# tfstate là "sổ ghi chép" của Terraform: nó ghi lại mọi tài nguyên đã tạo
+# và ID thật của chúng. Hai lý do không commit:
+#   1. BẢO MẬT: mọi mật khẩu đều nằm ở dạng CHỮ THƯỜNG trong này, kể cả biến
+#      đã đánh sensitive = true. Đẩy lên GitHub là lộ mật khẩu database.
+#   2. XUNG ĐỘT: 2 người cùng apply thì 2 file state khác nhau, merge không
+#      được, hạ tầng thành mồ côi (Terraform quên mất là mình đã tạo cái gì).
+# Dự án thật giải quyết bằng "remote backend" (S3 + DynamoDB lock, hoặc
+# Terraform Cloud) - state nằm trên mây, có khoá chống 2 người sửa cùng lúc.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# ----- THƯ MỤC PLUGIN: nặng, tải lại được -----
+# Chứa binary provider (~60MB). terraform init tải lại trong vài giây.
+.terraform/
+
+# ----- FILE THAM SỐ THẬT: chứa mật khẩu -----
+# Chỉ commit terraform.tfvars.example (không có giá trị thật).
+terraform.tfvars
+*.auto.tfvars
+secrets.tfvars
+
+# ----- FILE PLAN đã lưu: có thể chứa giá trị sensitive -----
+*.tfplan
+tfplan
+
+# ----- Log gỡ lỗi (sinh ra khi đặt TF_LOG=DEBUG) -----
+crash.log
+crash.*.log
+terraform.log
+
+# ============================================================
+# NGƯỢC LẠI - PHẢI COMMIT file .terraform.lock.hcl
+# ============================================================
+# File này ghim CHÍNH XÁC phiên bản + chuỗi băm của provider, giống
+# package-lock.json của npm. Commit nó thì máy bạn, máy bạn cùng nhóm và
+# runner CI đều dùng đúng một phiên bản provider -> kết quả giống nhau.
+# Không commit -> mỗi nơi tải một bản khác nhau, lỗi "máy tôi chạy được mà".
+#
+# Vì vậy KHÔNG thêm .terraform.lock.hcl vào file này.

@@ -1,0 +1,39 @@
+# ===================================================================
+# BIẾN CHUNG cho nhóm webservers — file này KHÔNG mã hóa
+# ===================================================================
+#
+# Ansible tự động đọc group_vars/<tên nhóm>/ cho mọi máy trong nhóm đó.
+# Không cần khai báo gì thêm trong playbook.
+#
+# ===== VÌ SAO FILE NÀY NẰM TRONG inventory/ ? =====
+# Ansible tìm group_vars/ ở hai nơi:
+#   1. CẠNH FILE INVENTORY  -> inventory/group_vars/   (chỗ này)
+#   2. Cạnh playbook đang chạy
+#
+# Inventory của ta là inventory/hosts.ini, nên group_vars phải nằm
+# trong inventory/. Đặt ở thư mục gốc ansible/ thì Ansible KHÔNG thấy,
+# và playbook sẽ lỗi "postgres_user is undefined" rất khó đoán nguyên nhân.
+#
+# Kiểm tra biến có được nạp hay không:
+#   ansible-inventory --host web1
+#
+# QUY TẮC TÁCH FILE:
+#   vars.yml  -> giá trị công khai, đọc được, so sánh diff được (file này)
+#   vault.yml -> mật khẩu, token (mã hóa bằng ansible-vault)
+#
+# Vì sao tách? Nếu nhét tất cả vào vault.yml thì mọi thay đổi nhỏ
+# cũng thành một khối mã hóa không đọc được khi review code.
+
+# Thư mục cài app trên server
+app_dir: /opt/dictionary-app
+
+# Cổng mở ra ngoài
+web_port: 3000
+db_port: 5432
+
+# Database — chỉ tên user và tên DB, KHÔNG có mật khẩu
+postgres_user: dictuser
+postgres_db: dictionary
+
+# Tài khoản registry (tên thì công khai, token nằm trong vault.yml)
+ghcr_user: vuanhtuanvn85

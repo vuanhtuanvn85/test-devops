@@ -1,0 +1,141 @@
+# ===================================================================
+# BÀI MỞ RỘNG — Rolling update: nâng cấp không làm chết dịch vụ
+# ===================================================================
+#
+# Chạy:
+#   ansible-playbook playbooks/04-rolling-update.yml \
+#     -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:abc1234
+#
+# VẤN ĐỀ của 03-deploy-app.yml:
+#   Ansible mặc định chạy SONG SONG trên mọi server. Cả web1 và web2
+#   cùng restart một lúc -> có vài giây KHÔNG server nào phục vụ được.
+#   Người dùng thấy lỗi 502.
+#
+# CÁCH GIẢI: serial — deploy từng server một.
+#   web1 nâng cấp (web2 vẫn phục vụ) -> web1 xong và khỏe -> mới sang web2.
+#   Luôn có ít nhất một server sống.
+
+- name: Rolling update ứng dụng từ điển
+  hosts: webservers
+
+  # ===== DÒNG QUAN TRỌNG NHẤT CỦA BÀI NÀY =====
+  # serial: 1 -> làm xong hoàn toàn server thứ nhất mới sang server thứ hai.
+  #
+  # Các lựa chọn khác:
+  #   serial: 2      -> 2 server mỗi lượt
+  #   serial: "50%"  -> nửa số server mỗi lượt
+  #   serial: [1, 2, 5]  -> lượt đầu 1 máy (thử nghiệm), rồi 2, rồi 5
+  #                         Kiểu này gọi là canary deploy.
+  serial: 1
+
+  # any_errors_fatal: server đầu lỗi thì DỪNG NGAY, không lan sang server sau.
+  # Nhờ đó một bản build hỏng chỉ ảnh hưởng 1 server, không sập cả hệ thống.
+  any_errors_fatal: true
+
+  become: yes
+
+  vars:
+    # KHÔNG khai báo lại app_dir / web_port ở đây.
+    # Chúng nằm ở group_vars/webservers/vars.yml — vars: trong playbook có
+    # mức ưu tiên CAO HƠN group_vars, nên viết lại ở đây sẽ làm việc sửa
+    # group_vars mất tác dụng (xem ghi chú dài trong 03-deploy-app.yml).
+    compose_project: dictionary
+
+    # Để rỗng và bắt buộc truyền -e image_tag (task assert bên dưới kiểm tra).
+    # KHÔNG viết "{{ image_tag | default('') }}" — biến tự tham chiếu
+    # gây lỗi "recursive loop detected".
+    image_tag: ""
+
+  # pre_tasks: chạy TRƯỚC các task chính
+  pre_tasks:
+    - name: Thông báo bắt đầu nâng cấp server này
+      ansible.builtin.debug:
+        msg: ">>> Đang nâng cấp {{ inventory_hostname }} — các server khác vẫn phục vụ"
+
+  tasks:
+    - name: Kiểm tra image_tag đã được truyền
+      # assert: dừng playbook với thông báo rõ ràng nếu điều kiện sai.
+      # Tốt hơn để playbook chạy nửa đường rồi lỗi khó hiểu.
+      ansible.builtin.assert:
+        that:
+          - image_tag | length > 0
+        fail_msg: >-
+          Thiếu image_tag. Rolling update phải chỉ rõ image nào.
+          Chạy lại với: -e image_tag=ghcr.io/user/app:sha
+        success_msg: "Sẽ nâng cấp lên {{ image_tag }}"
+
+    # Playbook này chỉ NÂNG CẤP, không cài mới: nó sửa IMAGE_TAG trong .env
+    # rồi recreate container. Nếu server chưa từng deploy thì .env và các file
+    # compose chưa tồn tại -> lệnh docker compose sẽ lỗi "no configuration file".
+    #
+    # Kiểm tra trước và báo rõ còn thiếu bước nào, thay vì để lỗi khó hiểu
+    # xuất hiện ở task cuối.
+    - name: Kiểm tra server đã được deploy lần đầu chưa
+      ansible.builtin.stat:
+        path: "{{ app_dir }}/{{ item }}"
+      register: file_can_thiet
+      loop:
+        - .env
+        - docker-compose.yml
+        - docker-compose.prod.yml
+        - docker-compose.ansible.yml
+
+    - name: Dừng với thông báo rõ nếu server chưa deploy lần đầu
+      ansible.builtin.assert:
+        that:
+          - file_can_thiet.results | map(attribute='stat.exists') | min
+        fail_msg: >-
+          {{ inventory_hostname }} chưa được deploy lần đầu
+          (thiếu file trong {{ app_dir }}).
+          Rolling update chỉ ĐỔI IMAGE của app đã chạy.
+          Chạy trước: ansible-playbook playbooks/03-deploy-app.yml -e image_tag={{ image_tag }}
+        success_msg: "Server đã có sẵn cấu hình, tiến hành nâng cấp"
+
+    - name: Kéo image mới về trước
+      # Kéo TRƯỚC khi tắt container cũ -> thời gian gián đoạn ngắn nhất.
+      # Nếu kéo sau, server sẽ chết suốt thời gian tải image.
+      ansible.builtin.command:
+        cmd: docker pull {{ image_tag }}
+        chdir: "{{ app_dir }}"
+      changed_when: true
+
+    - name: Cập nhật IMAGE_TAG trong file .env
+      ansible.builtin.lineinfile:
+        # lineinfile: sửa MỘT DÒNG trong file có sẵn, giữ nguyên phần còn lại.
+        # Dùng khi chỉ cần đổi một giá trị, không muốn ghi lại cả file.
+        path: "{{ app_dir }}/.env"
+        # regexp: tìm dòng khớp mẫu này...
+        regexp: '^IMAGE_TAG='
+        # line: ...rồi thay bằng dòng này. Không thấy thì thêm vào cuối file.
+        line: "IMAGE_TAG={{ image_tag }}"
+
+    - name: Thay container bằng image mới
+      ansible.builtin.command:
+        cmd: >-
+          docker compose -p {{ compose_project }}
+          -f docker-compose.yml
+          -f docker-compose.prod.yml
+          -f docker-compose.ansible.yml
+          up -d --force-recreate web
+        chdir: "{{ app_dir }}"
+      # Chỉ recreate service "web", KHÔNG chạm vào "db".
+      # Database restart là chuyện lớn: mất kết nối đang mở, có thể mất dữ liệu.
+
+    - name: Chờ server này khỏe lại trước khi sang server tiếp theo
+      ansible.builtin.uri:
+        url: "http://localhost:{{ web_port }}/api/health"
+        return_content: yes
+      register: health
+      retries: 30
+      delay: 2
+      until: health.status == 200 and 'connected' in health.content
+      changed_when: false
+      # ĐÂY là cái làm nên rolling update. Task này chặn Ansible lại.
+      # Server chưa khỏe -> playbook không sang server sau.
+      # Bỏ task này thì "serial: 1" mất hết ý nghĩa.
+
+  # post_tasks: chạy SAU khi các task chính xong
+  post_tasks:
+    - name: Xác nhận server đã nâng cấp xong
+      ansible.builtin.debug:
+        msg: "<<< {{ inventory_hostname }} đã chạy {{ image_tag }} và khỏe mạnh"

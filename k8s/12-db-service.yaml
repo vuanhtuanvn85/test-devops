@@ -1,0 +1,31 @@
+# Service = địa chỉ mạng ỔN ĐỊNH cho một nhóm pod.
+#
+# Vì sao cần? Pod là thứ dùng-rồi-bỏ: chết đi sinh lại là đổi IP.
+# Không ai gọi pod bằng IP. Service có IP + tên DNS cố định, tự trỏ tới pod còn sống.
+#
+# Đối chiếu Docker Compose: DNS nội bộ mà Compose tạo sẵn cho tên service.
+#
+# clusterIP: None = "headless service" - StatefulSet yêu cầu loại này.
+# Khác biệt:
+#   - Service thường: DNS trả về 1 IP ảo, rồi cân bằng tải xuống các pod.
+#   - Headless:       DNS trả về THẲNG IP của từng pod.
+# Với database ta cần nói chuyện đúng với db-0, không muốn bị chia tải lung tung.
+#
+# Backend gọi host "db" (xem ConfigMap) và K8s phân giải thành:
+#   db  ->  db.dictionary.svc.cluster.local  ->  IP của pod db-0
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: dictionary
+spec:
+  clusterIP: None
+  selector:
+    # Service tìm pod bằng LABEL, không bằng tên. Nhãn này phải khớp
+    # template.metadata.labels của StatefulSet.
+    app: db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

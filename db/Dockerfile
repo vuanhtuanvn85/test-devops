@@ -1,22 +1,17 @@
-# Image database có sẵn schema + dữ liệu mẫu bên trong.
+# Postgres + sẵn dữ liệu khởi tạo NẰM TRONG image (không cần bind mount).
 #
-# VÌ SAO CẦN FILE NÀY (thay vì dùng thẳng postgres:16-alpine)?
+# Vì sao cần file này?
+#   docker-compose.yml gốc mount "./db/init.sql" vào container - chạy tay ở máy
+#   thì đúng, nhưng khi Jenkins (trong container) gọi Docker của host qua
+#   /var/run/docker.sock thì daemon tìm đường dẫn đó TRÊN HOST, không phải trong
+#   container Jenkins. Đường dẫn /var/jenkins_home/... không tồn tại trên host
+#   -> Docker mount một thư mục rỗng -> Postgres không chạy init.sql
+#   -> lỗi 'relation "words" does not exist'.
 #
-# docker-compose.yml gốc nạp init.sql bằng bind mount:
-#     - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-#
-# Cách đó chạy tốt ở máy dev, nhưng HỎNG khi Jenkins chạy trong container mà
-# điều khiển Docker của host (kiểu DooD - Docker outside of Docker):
-# đường dẫn "./db/init.sql" được daemon hiểu là đường dẫn TRÊN HOST, trong khi
-# workspace Jenkins (/var/jenkins_home/...) chỉ tồn tại bên trong container.
-# Docker không thấy file -> mount vào thư mục rỗng -> Postgres bỏ qua init
-# -> lỗi 'relation "words" does not exist'.
-#
-# COPY thì khác: file được đóng gói vào image lúc build, không phụ thuộc
-# đường dẫn lúc chạy. Nhờ vậy chạy đúng ở mọi môi trường.
+# Nhúng thẳng vào image thì chạy đúng ở MỌI nơi: máy cá nhân, Jenkins, runner CI.
 
 FROM postgres:16-alpine
 
-# Postgres tự chạy mọi file .sql trong thư mục này ở LẦN KHỞI TẠO ĐẦU TIÊN,
-# khi thư mục dữ liệu còn rỗng. Volume đã có dữ liệu thì file này bị bỏ qua.
+# Postgres tự chạy mọi file trong thư mục này khi khởi tạo lần đầu
+# (chỉ chạy khi volume dữ liệu còn rỗng).
 COPY init.sql /docker-entrypoint-initdb.d/init.sql

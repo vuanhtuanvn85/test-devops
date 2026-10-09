@@ -1,0 +1,40 @@
+# Ingress = cổng vào HTTP/HTTPS cấp cluster: định tuyến theo TÊN MIỀN và ĐƯỜNG DẪN.
+#
+# Vì sao hơn NodePort? NodePort cho mỗi app một số cổng khó nhớ (30080, 30081...).
+# Ingress cho nhiều app dùng CHUNG cổng 80/443, phân biệt bằng domain/path,
+# và là nơi gắn chứng chỉ TLS.
+#
+# ===== FILE NÀY LÀ TUỲ CHỌN - cần cài Ingress Controller trước =====
+# Bản thân Ingress chỉ là "tờ khai định tuyến". Phải có controller đọc và thực thi:
+#
+#   Docker Desktop:
+#     kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+#
+#   minikube:
+#     minikube addons enable ingress
+#
+# Rồi trỏ tên miền về máy (cần quyền sudo):
+#   echo "127.0.0.1 dictionary.local" | sudo tee -a /etc/hosts
+#
+# Mở: http://dictionary.local
+#
+# Chưa cài controller thì bỏ qua file này, dùng NodePort 30080 ở file 21 là đủ.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: dictionary
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: dictionary.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 3000

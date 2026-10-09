@@ -1,0 +1,41 @@
+# ===================================================================
+# PHÒNG LAB: 2 "server" Ubuntu để thực hành Ansible
+# ===================================================================
+#
+# Cách dựng (đừng gọi docker compose trực tiếp lần đầu):
+#   ./setup-lab.sh
+#
+# Script đó sinh khóa SSH trước, vì Dockerfile cần file authorized_keys.
+#
+# Sau khi dựng:
+#   web1 -> ssh deploy@localhost -p 2201
+#   web2 -> ssh deploy@localhost -p 2202
+
+services:
+  web1:
+    build: .
+    container_name: ansible-web1
+    hostname: web1
+    ports:
+      # 2201 trên laptop -> 22 trong container.
+      # Ansible sẽ kết nối tới localhost:2201.
+      - "2201:22"
+    # privileged: cần cho Bài 4 — chạy Docker BÊN TRONG server ảo này.
+    # Server thật không cần dòng này; đây là cái giá của việc giả lập máy.
+    privileged: true
+    networks:
+      - labnet
+
+  web2:
+    build: .
+    container_name: ansible-web2
+    hostname: web2
+    ports:
+      - "2202:22"
+    privileged: true
+    networks:
+      - labnet
+
+networks:
+  labnet:
+    name: ansible-labnet

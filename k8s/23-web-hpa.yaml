@@ -1,0 +1,43 @@
+# HPA (HorizontalPodAutoscaler) = tự tăng/giảm SỐ LƯỢNG pod theo tải thực tế.
+#
+# Đối chiếu Docker Compose: KHÔNG CÓ gì tương đương. Đây là thứ Compose không làm được,
+# và là một trong những lý do chính người ta chuyển sang Kubernetes.
+#
+# ===== FILE NÀY LÀ TUỲ CHỌN - cần metrics-server =====
+# HPA phải đọc được mức dùng CPU hiện tại. Không có metrics-server thì nó báo
+# "unknown" và không làm gì cả.
+#
+#   Docker Desktop (cần --kubelet-insecure-tls vì chứng chỉ local tự ký):
+#     kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#     kubectl patch deployment metrics-server -n kube-system --type=json \
+#       -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+#
+#   minikube:
+#     minikube addons enable metrics-server
+#
+# Kiểm tra đã chạy chưa:  kubectl top pods -n dictionary
+#
+# LƯU Ý: HPA chỉnh số replica, nên khi bật HPA thì ĐỪNG sửa "replicas" trong
+# Deployment nữa - hai bên sẽ giành nhau.
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web
+  namespace: dictionary
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Trung bình mỗi pod dùng quá 50% CPU so với requests (50m) thì thêm pod.
+          # Tức là ngưỡng thật = 25m CPU mỗi pod.
+          averageUtilization: 50

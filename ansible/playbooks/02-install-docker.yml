@@ -1,0 +1,225 @@
+# ===================================================================
+# BÀI 3 — Cài Docker lên server bằng Ansible
+# ===================================================================
+#
+# Chạy:
+#   ansible-playbook playbooks/02-install-docker.yml
+#
+# CHẠY LẠI LẦN THỨ HAI và so sánh dòng recap ở cuối:
+#   Lần 1: changed=8   (Ansible phải làm việc)
+#   Lần 2: changed=0   (mọi thứ đã đúng, không làm gì cả)
+#
+# Đó là IDEMPOTENT — chạy bao nhiêu lần kết quả vẫn thế.
+# Shell script thường KHÔNG có tính chất này: chạy 2 lần là thêm repo 2 lần.
+
+- name: Cài Docker Engine và Docker Compose plugin
+  hosts: webservers
+
+  # become: yes -> chạy task với quyền root (tương đương sudo).
+  # Cài gói hệ thống thì bắt buộc. User "deploy" đã được cấp NOPASSWD sudo
+  # trong lab/Dockerfile nên không bị hỏi mật khẩu.
+  become: yes
+
+  # Biến dùng riêng cho playbook này
+  vars:
+    # Gom tên gói vào một danh sách -> sửa một chỗ khi cần thêm/bớt
+    docker_packages:
+      - docker-ce              # Docker Engine (daemon)
+      - docker-ce-cli          # lệnh "docker"
+      - containerd.io          # runtime chạy container ở tầng dưới
+      - docker-compose-plugin  # cho phép gõ "docker compose" (không dấu gạch)
+
+  tasks:
+    # ===============================================================
+    # PHẦN 1: Chuẩn bị hệ thống
+    # ===============================================================
+
+    - name: Cập nhật danh sách gói của apt
+      ansible.builtin.apt:
+        update_cache: yes
+        # cache_valid_time: nếu cache mới hơn 1 giờ thì BỎ QUA bước này.
+        # Nhờ đó chạy lại playbook không mất thời gian tải lại metadata,
+        # và Ansible báo "ok" thay vì "changed".
+        cache_valid_time: 3600
+
+    - name: Cài các gói phụ thuộc để thêm repo HTTPS
+      ansible.builtin.apt:
+        # Truyền cả danh sách một lần -> apt chỉ chạy 1 lần thay vì 4 lần
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        # state: present = "phải có mặt".
+        # Ansible tự kiểm tra: đã có thì không làm gì, chưa có thì cài.
+        # Đây là tư duy KHAI BÁO (declarative): mô tả trạng thái MONG MUỐN,
+        # không mô tả các bước phải làm.
+        state: present
+
+    # ===============================================================
+    # PHẦN 2: Thêm repository chính thức của Docker
+    # ===============================================================
+    # Ubuntu có sẵn gói docker.io nhưng thường cũ và thiếu compose plugin.
+    # Nên ta lấy từ repo của Docker.
+
+    - name: Tạo thư mục chứa khóa GPG
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory   # đảm bảo là THƯ MỤC (không phải file)
+        mode: '0755'       # phải để trong nháy — nếu không YAML hiểu là số 493
+
+    - name: Tải khóa GPG của Docker
+      # Khóa GPG dùng để xác minh gói tải về đúng là của Docker,
+      # không bị kẻ khác thay thế giữa đường.
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+      # get_url tự bỏ qua nếu file đích đã tồn tại -> idempotent sẵn
+
+    - name: Thêm repository Docker vào apt
+      ansible.builtin.apt_repository:
+        # Chuỗi dài nên dùng biến Ansible facts để tự điền kiến trúc và tên bản Ubuntu.
+        # Nhờ đó playbook chạy đúng trên cả máy amd64 và arm64,
+        # cả Ubuntu 22.04 (jammy) và 24.04 (noble) — KHÔNG cần sửa gì.
+        repo: >-
+          deb [arch={{ 'amd64' if ansible_facts['architecture'] == 'x86_64' else 'arm64' }}
+          signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu
+          {{ ansible_facts['distribution_release'] }} stable
+        state: present
+        filename: docker   # tạo /etc/apt/sources.list.d/docker.list
+        update_cache: yes  # cập nhật lại cache ngay để thấy gói mới
+
+    # ===============================================================
+    # PHẦN 3: Cài Docker
+    # ===============================================================
+
+    - name: Cài Docker Engine và Compose plugin
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"   # dùng biến khai báo ở trên
+        state: present
+
+    # ===============================================================
+    # PHẦN 4: Cấp quyền dùng Docker cho user deploy
+    # ===============================================================
+
+    - name: Thêm user deploy vào group docker
+      ansible.builtin.user:
+        name: deploy
+        groups: docker
+        # append: yes -> THÊM vào các group đang có.
+        # Thiếu dòng này, Ansible sẽ XOÁ hết group khác (kể cả sudo!) -> mất quyền.
+        append: yes
+      # Lưu ý: đổi group chỉ có hiệu lực ở phiên đăng nhập MỚI.
+      # Ansible mở kết nối SSH mới mỗi lần chạy nên lần sau là ổn.
+
+    # ===============================================================
+    # PHẦN 5: Khởi động Docker daemon
+    # ===============================================================
+    # Server thật dùng systemd:
+    #     - name: Bật Docker
+    #       ansible.builtin.service:
+    #         name: docker
+    #         state: started
+    #         enabled: yes        # tự chạy khi server khởi động lại
+    #
+    # Container lab KHÔNG có systemd, nên ta khởi động thủ công.
+    # Đây là điểm duy nhất playbook phải "lách" vì môi trường giả lập.
+
+    # ===== CẤU HÌNH DAEMON — BẮT BUỘC trong môi trường lab =====
+    # Phải ghi file này TRƯỚC khi bật dockerd, vì daemon chỉ đọc nó lúc
+    # khởi động.
+    #
+    # VÌ SAO CẦN storage-driver: vfs ?
+    #
+    # web1/web2 là container privileged nằm TRONG Docker Desktop. Chạy
+    # dockerd trong đó nghĩa là overlayfs lồng trên overlayfs — kernel
+    # từ chối:
+    #
+    #     failed to mount /tmp/containerd-mountXXX: mount source: "overlay",
+    #     ... err: invalid argument
+    #
+    # Docker 29 mặc định dùng containerd snapshotter với overlayfs, nên
+    # LỖI NGAY khi tạo container đầu tiên. Thông báo lỗi nói về "mount"
+    # và "snapshot", không hề nhắc tới storage driver, nên rất khó đoán.
+    #
+    # vfs không dùng overlay: nó COPY toàn bộ layer thay vì xếp lớp.
+    # Chậm và tốn đĩa hơn, nhưng chạy được ở mọi nơi. Đánh đổi chấp nhận
+    # được cho lab — server thật có overlay2 nên KHÔNG cần dòng này.
+    - name: Tạo thư mục cấu hình Docker
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: Cấu hình daemon dùng vfs (lab không chạy được overlayfs lồng nhau)
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+        content: |
+          {
+            "storage-driver": "vfs",
+            "features": { "containerd-snapshotter": false }
+          }
+      # Đổi cấu hình thì phải bật lại daemon mới có tác dụng.
+      register: cau_hinh_daemon
+
+    - name: Kiểm tra Docker daemon đã chạy chưa
+      ansible.builtin.command: docker info
+      register: docker_info
+      # failed_when: false -> lệnh lỗi cũng KHÔNG dừng playbook.
+      # Ta cần biết kết quả để quyết định, chứ không muốn playbook chết.
+      failed_when: false
+      changed_when: false
+
+    # Daemon đang chạy nhưng cấu hình vừa đổi -> tắt đi để task sau bật lại
+    # với cấu hình mới. Không làm vậy thì daemon vẫn giữ driver cũ và lỗi
+    # overlay quay lại, dù file cấu hình trên đĩa đã đúng.
+    - name: Tắt dockerd nếu cấu hình vừa thay đổi
+      ansible.builtin.shell: |
+        pkill dockerd || true
+        sleep 2
+      when: cau_hinh_daemon.changed and docker_info.rc == 0
+
+    - name: Khởi động dockerd ở chế độ nền (vì lab không có systemd)
+      # nohup + & : tiến trình sống tiếp sau khi SSH đóng
+      ansible.builtin.shell: |
+        nohup dockerd > /var/log/dockerd.log 2>&1 &
+      # when: chỉ chạy task này KHI điều kiện đúng.
+      # docker_info.rc != 0 nghĩa là lệnh trên thất bại -> daemon chưa chạy.
+      # Nhờ when, chạy lại playbook sẽ báo "skipping" thay vì bật thêm 1 dockerd nữa.
+      #
+      # Thêm điều kiện thứ hai: cấu hình vừa đổi -> task trên đã tắt daemon,
+      # giờ phải bật lại để nạp cấu hình mới.
+      when: docker_info.rc != 0 or cau_hinh_daemon.changed
+
+    - name: Chờ Docker daemon nhận lệnh
+      ansible.builtin.command: docker info
+      register: cho_docker
+      # retries + until: thử lại tối đa 15 lần, mỗi lần cách 2 giây,
+      # cho đến khi rc == 0. Daemon cần vài giây để sẵn sàng.
+      retries: 15
+      delay: 2
+      until: cho_docker.rc == 0
+      changed_when: false
+
+    # ===============================================================
+    # PHẦN 6: Xác nhận kết quả
+    # ===============================================================
+
+    - name: Lấy phiên bản Docker
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+
+    - name: Lấy phiên bản Docker Compose
+      ansible.builtin.command: docker compose version
+      register: compose_version
+      changed_when: false
+
+    - name: Báo cáo kết quả
+      ansible.builtin.debug:
+        msg:
+          - "{{ inventory_hostname }} đã sẵn sàng"
+          - "{{ docker_version.stdout }}"
+          - "{{ compose_version.stdout }}"

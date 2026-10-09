@@ -1,0 +1,23 @@
+# ConfigMap = nơi chứa cấu hình KHÔNG nhạy cảm, tách khỏi image.
+#
+# Đối chiếu Docker Compose: phần "environment:" không phải mật khẩu.
+#
+# Nguyên tắc cốt lõi: image phải giống hệt nhau ở dev/staging/prod.
+# Cái thay đổi giữa các môi trường là ConfigMap, không phải image.
+# Đổi cấu hình = sửa ConfigMap + restart pod, KHÔNG build lại image.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dictionary-config
+  namespace: dictionary
+data:
+  # DB_HOST là "db" - tên Service của Postgres ở file 20-db-service.yaml.
+  #
+  # ĐIỂM QUAN TRỌNG NHẤT CỦA BÀI: giá trị này y hệt docker-compose.yml.
+  # Backend (backend/db.js) KHÔNG phải sửa một dòng nào khi lên Kubernetes,
+  # vì K8s cũng có DNS nội bộ giống hệt Compose:
+  #   "db" -> db.dictionary.svc.cluster.local -> ClusterIP của Service db
+  DB_HOST: "db"
+  DB_PORT: "5432"
+  DB_NAME: "dictionary"

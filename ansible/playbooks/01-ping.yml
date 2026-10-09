@@ -1,0 +1,53 @@
+# ===================================================================
+# BÀI 2 — Playbook đầu tiên: kiểm tra kết nối và xem thông tin máy
+# ===================================================================
+#
+# Chạy:
+#   ansible-playbook playbooks/01-ping.yml
+#
+# Playbook này KHÔNG thay đổi gì trên server. Chỉ đọc và in ra.
+# Dùng để xác nhận Ansible kết nối được trước khi làm việc thật.
+
+- name: Kiểm tra kết nối và thu thập thông tin server
+  # hosts: chạy trên nhóm nào trong inventory
+  hosts: webservers
+
+  # gather_facts: Ansible tự thu thập ~1000 thông tin về máy đích
+  # (hệ điều hành, RAM, IP, ổ đĩa...) trước khi chạy task đầu tiên.
+  # Kết quả nằm trong biến ansible_facts, dùng được ngay trong task.
+  gather_facts: yes
+
+  tasks:
+    # ---------- Task 1: ping ----------
+    - name: Xác nhận Ansible chạy được Python trên máy đích
+      # Module "ping" của Ansible KHÁC lệnh ping mạng.
+      # Nó kiểm tra: SSH vào được + Python chạy được + trả lời được.
+      # Đây là 3 điều kiện bắt buộc để mọi module khác hoạt động.
+      ansible.builtin.ping:
+
+    # ---------- Task 2: in thông tin đã thu thập ----------
+    - name: In thông tin hệ thống
+      # debug: chỉ in ra màn hình, không tác động server
+      ansible.builtin.debug:
+        # {{ }} là cú pháp Jinja2 — chèn giá trị biến vào chuỗi
+        msg: >-
+          {{ inventory_hostname }}
+          | OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+          | Kiến trúc: {{ ansible_facts['architecture'] }}
+          | RAM: {{ ansible_facts['memtotal_mb'] }} MB
+          | Python: {{ ansible_facts['python_version'] }}
+
+    # ---------- Task 3: chạy lệnh shell và bắt kết quả ----------
+    - name: Xem uptime của server
+      ansible.builtin.command: uptime
+      # register: lưu kết quả task vào biến để task sau dùng
+      register: ket_qua_uptime
+      # changed_when: false -> báo Ansible "task này chỉ ĐỌC, không sửa gì".
+      # Thiếu dòng này Ansible luôn báo "changed" vì nó không biết lệnh
+      # shell làm gì. Đây là cách giữ báo cáo trung thực.
+      changed_when: false
+
+    - name: In uptime
+      ansible.builtin.debug:
+        # .stdout là đầu ra chuẩn của lệnh vừa chạy
+        msg: "{{ ket_qua_uptime.stdout }}"

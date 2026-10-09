@@ -1,0 +1,17 @@
+# ===================================================================
+# KHÔNG BAO GIỜ commit các file dưới đây lên git
+# ===================================================================
+
+# File vault đã giải mã hoặc chưa kịp mã hóa.
+# Nếu đã mã hóa bằng ansible-vault thì commit ĐƯỢC (nội dung là chuỗi rối),
+# nhưng chặn sẵn cho an toàn — thà thiếu hơn lộ mật khẩu.
+inventory/group_vars/*/vault.yml
+
+# Mật khẩu để mở vault — TUYỆT ĐỐI không commit
+.vault_pass
+
+# Khóa SSH công khai do setup-lab.sh sinh ra
+lab/authorized_keys
+
+# File tạm của Ansible
+*.retry

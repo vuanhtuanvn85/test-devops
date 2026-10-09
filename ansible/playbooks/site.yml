@@ -1,0 +1,26 @@
+# ===================================================================
+# PLAYBOOK TỔNG — chạy toàn bộ quy trình từ server trắng đến app chạy
+# ===================================================================
+#
+# Chạy tất cả:
+#   ansible-playbook playbooks/site.yml
+#
+# Chỉ chạy phần cài Docker (bỏ qua deploy):
+#   ansible-playbook playbooks/site.yml --tags docker
+#
+# Chỉ deploy lại app (Docker đã cài rồi, nhanh hơn nhiều):
+#   ansible-playbook playbooks/site.yml --tags deploy
+#
+# Xem có những tag nào:
+#   ansible-playbook playbooks/site.yml --list-tags
+#
+# import_playbook: ghép nhiều playbook thành một quy trình.
+# Đây là cách tổ chức thực tế: mỗi playbook làm một việc, site.yml gom lại.
+
+- name: Cài Docker lên toàn bộ server
+  import_playbook: 02-install-docker.yml
+  tags: [docker, setup]
+
+- name: Deploy ứng dụng từ điển
+  import_playbook: 03-deploy-app.yml
+  tags: [deploy, app]

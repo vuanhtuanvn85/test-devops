@@ -1,0 +1,32 @@
+# ============================================================
+# Mẫu file tham số. Dùng như .env.example của buổi 5:
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Terraform TỰ ĐỘNG nạp file tên terraform.tfvars, không cần khai báo gì.
+# Muốn dùng tên khác thì phải chỉ rõ:  terraform apply -var-file=staging.tfvars
+#
+# File terraform.tfvars thật KHÔNG commit (chứa mật khẩu) - đã có trong .gitignore.
+# ============================================================
+
+# --- Đặt tên ---
+project_name = "dictionary"
+environment  = "dev"
+
+# --- Database ---
+postgres_user     = "tuandev"
+postgres_password = "DongA@2026"
+postgres_db       = "tudien"
+
+# --- Cổng mở ra máy host ---
+web_port = 8081   # 8080 đã bị container Jenkins của buổi 6 chiếm
+db_port  = 55432
+
+# --- Docker daemon ---
+# Docker Desktop trên macOS dùng socket trong thư mục home, không phải /var/run.
+# Kiểm tra máy mình bằng:  docker context inspect --format '{{.Endpoints.docker.Host}}'
+#
+# Docker Desktop (macOS):  unix:///Users/<tên>/.docker/run/docker.sock
+# OrbStack:                unix:///Users/<tên>/.orbstack/run/docker.sock
+# Linux / Colima:          unix:///var/run/docker.sock
+docker_host = "unix:///Users/vuanhtuan/.docker/run/docker.sock"

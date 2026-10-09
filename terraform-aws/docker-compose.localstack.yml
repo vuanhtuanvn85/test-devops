@@ -1,0 +1,41 @@
+# ============================================================
+# LocalStack - giả lập AWS chạy ngay trên máy, bản Community MIỄN PHÍ
+# ============================================================
+#
+# LocalStack là gì? Một container dựng lên các API y hệt AWS thật
+# (S3, ECR, IAM, SQS...) nhưng chạy nội bộ. Nhờ vậy:
+#   - Không cần tài khoản AWS, không cần thẻ tín dụng
+#   - Không bao giờ phát sinh hoá đơn
+#   - Gõ đúng cú pháp Terraform AWS như thật -> học được kỹ năng dùng được
+#   - Tạo/xoá thoải mái, sai thì restart container là sạch
+#
+# Chạy:   docker compose -f docker-compose.localstack.yml up -d
+# Dừng:   docker compose -f docker-compose.localstack.yml down
+#
+# Bản Community hỗ trợ tốt: S3, ECR, IAM, SQS, SNS, DynamoDB, Lambda,
+# CloudWatch Logs, Secrets Manager, STS.
+# Bản Community KHÔNG hỗ trợ đầy đủ: ECS, RDS, EKS (cần bản Pro có phí).
+# Vì vậy bài này tập trung vào S3 + ECR + IAM + Secrets Manager.
+
+services:
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: localstack-dictionary
+    ports:
+      # Mọi service AWS đều đi qua 1 cổng duy nhất 4566
+      - "4566:4566"
+    environment:
+      # Danh sách service cần bật. Bật ít thì khởi động nhanh hơn.
+      SERVICES: s3,ecr,iam,sts,secretsmanager,logs
+      # Mức log: cho debug thì đổi thành trace
+      DEBUG: "0"
+      # Bỏ qua kiểm tra region/credential cho đỡ rắc rối khi học
+      AWS_DEFAULT_REGION: ap-southeast-1
+    volumes:
+      # LocalStack cần Docker socket để tự tạo container phụ (cho Lambda...)
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

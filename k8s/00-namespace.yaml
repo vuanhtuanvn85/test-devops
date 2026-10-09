@@ -1,0 +1,15 @@
+# Namespace = "thư mục" logic trong cluster, gom tài nguyên của một ứng dụng lại.
+#
+# Đối chiếu Docker Compose: giống "-p <project>" khi chạy compose - cùng một cluster
+# vẫn chứa được nhiều app mà tên không đụng nhau.
+#
+# Lợi ích cho lớp học: xoá sạch toàn bộ bài thực hành bằng ĐÚNG MỘT lệnh
+#   kubectl delete namespace dictionary
+# thay vì xoá lẻ từng Deployment, Service, PVC...
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dictionary
+  labels:
+    app.kubernetes.io/name: dictionary-app

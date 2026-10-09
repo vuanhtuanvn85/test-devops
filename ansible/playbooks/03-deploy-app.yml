@@ -1,0 +1,240 @@
+# ===================================================================
+# BÀI 4 — Deploy ứng dụng từ điển lên server bằng Ansible
+# ===================================================================
+#
+# Playbook này làm ĐÚNG những việc bạn đang làm tay ở Bài 5 và Bài 6:
+#   1. Tạo thư mục trên server
+#   2. Copy docker-compose.yml + docker-compose.prod.yml lên
+#   3. Sinh file .env (mật khẩu lấy từ Vault)
+#   4. Kéo image từ registry
+#   5. docker compose up -d
+#   6. Gọi /api/health xác nhận app sống
+#
+# Chạy (image build từ source, chưa cần registry):
+#   ansible-playbook playbooks/03-deploy-app.yml
+#
+# Chạy với image thật từ GHCR:
+#   ansible-playbook playbooks/03-deploy-app.yml \
+#     -e image_tag=ghcr.io/vuanhtuanvn85/test-devops:abc1234
+#
+# Chạy với mật khẩu mã hóa bằng Vault:
+#   ansible-playbook playbooks/03-deploy-app.yml --ask-vault-pass
+
+- name: Deploy ứng dụng từ điển
+  hosts: webservers
+  become: yes
+
+  # ===============================================================
+  # BIẾN — và một bài học về THỨ TỰ ƯU TIÊN
+  # ===============================================================
+  # Ansible có hơn 20 mức ưu tiên biến. Ba mức bạn gặp hằng ngày:
+  #
+  #   1. group_vars/          (thấp)     <- giá trị chung của cả nhóm server
+  #   2. vars: trong playbook (giữa)     <- GHI ĐÈ group_vars
+  #   3. -e trên dòng lệnh    (CAO NHẤT) <- ghi đè tất cả
+  #
+  # Playbook này CỐ Ý không khai báo lại app_dir, web_port, postgres_user...
+  # Chúng nằm ở group_vars/webservers/vars.yml — một nguồn duy nhất.
+  #
+  # Vì sao? Nếu ở đây viết thẳng "web_port: 3000" thì sửa file group_vars
+  # sẽ KHÔNG có tác dụng gì (mức 2 thắng mức 1). Người mới nhìn vào sẽ
+  # tưởng group_vars bị lỗi, mất cả buổi để tìm.
+  #
+  # ===== CÁI BẪY LỚN NHẤT: BIẾN TỰ THAM CHIẾU =====
+  # Đừng bao giờ "chống cháy" bằng cách viết:
+  #
+  #     web_port: "{{ web_port | default(3000) }}"        # SAI
+  #     web_port: "{{ web_port | default(3000, true) }}"  # VẪN SAI
+  #
+  # Biến trỏ vào chính nó -> Ansible báo "recursive loop detected"
+  # rồi in ra hàng trăm dòng lỗi giống nhau. Thêm tham số true cũng không cứu.
+  # Cách đúng: để group_vars giữ giá trị, playbook không nhắc lại.
+  #
+  # Vẫn đổi được lúc chạy, vì mức 3 cao hơn mức 1:
+  #     ansible-playbook playbooks/03-deploy-app.yml -e web_port=8080
+  vars:
+    # Chỉ khai báo ở đây những biến KHÔNG thuộc group_vars.
+
+    # Mật khẩu database: ưu tiên lấy từ Vault, chưa tạo Vault thì dùng
+    # mật khẩu học tập. Tên biến bên trong (vault_postgres_password) KHÁC
+    # tên biến bên ngoài (postgres_password) nên KHÔNG bị lỗi tự tham chiếu.
+    # Xem mục Ansible Vault trong file hướng dẫn.
+    postgres_password: "{{ vault_postgres_password | default('dictpass') }}"
+
+    # Image sẽ chạy. Rỗng = build từ source, có giá trị = kéo từ registry.
+    # Truyền từ dòng lệnh: -e image_tag=ghcr.io/user/app:abc1234
+    image_tag: ""
+
+    # Tên project compose — quyết định tiền tố tên container.
+    # Đặt tên riêng để không đụng stack khác trên cùng máy.
+    compose_project: dictionary
+
+  tasks:
+    # ===============================================================
+    # PHẦN 1: Chuẩn bị thư mục trên server
+    # ===============================================================
+
+    - name: Tạo thư mục ứng dụng
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: deploy
+        group: deploy
+        mode: '0755'
+
+    - name: Tạo thư mục db (chứa init.sql và Dockerfile)
+      ansible.builtin.file:
+        path: "{{ app_dir }}/db"
+        state: directory
+        owner: deploy
+        group: deploy
+        mode: '0755'
+
+    # ===============================================================
+    # PHẦN 2: Đưa file cấu hình lên server
+    # ===============================================================
+
+    - name: Copy các file compose và db lên server
+      ansible.builtin.copy:
+        # "{{ playbook_dir }}/.." = thư mục ansible/
+        # "/../.." = thư mục gốc project. Viết tương đối để playbook
+        # chạy được ở máy bất kỳ, không phụ thuộc đường dẫn tuyệt đối.
+        src: "{{ playbook_dir }}/../../{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+        owner: deploy
+        group: deploy
+        mode: '0644'
+      # loop: lặp task này qua từng phần tử. Biến {{ item }} là phần tử hiện tại.
+      # Gộp 4 task giống nhau thành 1 -> sửa một chỗ khi thêm file.
+      loop:
+        - docker-compose.yml
+        - docker-compose.prod.yml
+        # Overlay riêng cho Ansible: bắt db dùng image chính thức thay vì
+        # build trên server. Xem ghi chú trong chính file đó.
+        - docker-compose.ansible.yml
+        - db/Dockerfile
+        - db/init.sql
+      # notify: nếu task này ĐỔI file thì gọi handler cuối playbook.
+      # File không đổi -> không gọi -> không restart vô ích.
+      notify: Khoi dong lai ung dung
+
+    # ===============================================================
+    # PHẦN 3: Sinh file .env từ template
+    # ===============================================================
+
+    - name: Sinh file .env từ template
+      ansible.builtin.template:
+        # template KHÁC copy: nó xử lý {{ biến }} trước khi ghi lên server.
+        src: "{{ playbook_dir }}/../templates/env.j2"
+        dest: "{{ app_dir }}/.env"
+        owner: deploy
+        group: deploy
+        # 0600 = chỉ chủ sở hữu đọc/ghi được.
+        # File này chứa mật khẩu database -> KHÔNG để user khác đọc.
+        mode: '0600'
+      notify: Khoi dong lai ung dung
+
+    # ===============================================================
+    # PHẦN 4: Kéo image từ registry (nếu có chỉ định)
+    # ===============================================================
+
+    - name: Đăng nhập registry GHCR
+      # community.docker là collection ngoài. Cài bằng:
+      #   ansible-galaxy collection install community.docker
+      # Ở đây dùng shell cho đỡ phụ thuộc, sinh viên chạy được ngay.
+      ansible.builtin.shell:
+        cmd: echo "{{ ghcr_token }}" | docker login ghcr.io -u "{{ ghcr_user }}" --password-stdin
+      # when: chỉ đăng nhập khi có token. Image công khai thì không cần.
+      when: ghcr_token is defined and ghcr_token | length > 0
+      # no_log: KHÔNG in nội dung task này ra log.
+      # Thiếu dòng này token sẽ hiện nguyên văn trong output -> rò rỉ.
+      no_log: true
+
+    - name: Kéo image từ registry
+      ansible.builtin.command:
+        cmd: docker pull {{ image_tag }}
+        chdir: "{{ app_dir }}"
+      when: image_tag | length > 0
+      # Pull xong Ansible không biết image có mới không, nên tự khai báo:
+      changed_when: true
+      notify: Khoi dong lai ung dung
+
+    # ===============================================================
+    # PHẦN 5: Khởi động ứng dụng
+    # ===============================================================
+
+    - name: Dựng ứng dụng bằng docker compose
+      ansible.builtin.command:
+        # Có image_tag -> dùng thêm file prod (chạy image, không build).
+        # Không có    -> chỉ file gốc (build từ source).
+        #
+        # KHÔNG dùng "down -v" ở đây: -v xoá volume pgdata -> mất dữ liệu.
+        # "up -d" tự thay container nào có cấu hình đổi, giữ nguyên phần còn lại.
+        cmd: >-
+          docker compose -p {{ compose_project }}
+          -f docker-compose.yml
+          {{ '-f docker-compose.prod.yml -f docker-compose.ansible.yml' if image_tag | length > 0 else '' }}
+          up -d --remove-orphans
+        chdir: "{{ app_dir }}"
+      register: ket_qua_compose
+      # compose in ra "Started"/"Created"/"Recreated" khi thực sự thay đổi.
+      # Không có các từ đó = mọi thứ đã đúng -> báo "ok" thay vì "changed".
+      # Đây là cách làm idempotent cho lệnh shell mà Ansible không hiểu.
+      changed_when: >-
+        'Started' in ket_qua_compose.stderr or
+        'Created' in ket_qua_compose.stderr or
+        'Recreated' in ket_qua_compose.stderr
+
+    # ===============================================================
+    # PHẦN 6: Kiểm tra sau deploy
+    # ===============================================================
+    # Deploy xong mà không kiểm tra thì chưa xong. Container "đang chạy"
+    # không có nghĩa là app trả lời được — nó có thể đang crash-loop.
+
+    - name: Chờ ứng dụng trả lời /api/health
+      ansible.builtin.uri:
+        # Gọi từ CHÍNH server (localhost của server, không phải laptop)
+        url: "http://localhost:{{ web_port }}/api/health"
+        return_content: yes
+      register: health
+      retries: 30
+      delay: 2
+      # Chờ tới khi API báo đã kết nối database.
+      # Kiểm tra nội dung, không chỉ kiểm tra HTTP 200 —
+      # app có thể trả 200 mà database vẫn chưa sẵn sàng.
+      until: health.status == 200 and 'connected' in health.content
+      changed_when: false
+
+    - name: Kiểm tra tra từ "computer" ra nghĩa tiếng Việt
+      ansible.builtin.uri:
+        url: "http://localhost:{{ web_port }}/api/define/computer"
+        return_content: yes
+      register: tra_tu
+      failed_when: "'máy tính' not in tra_tu.content"
+      changed_when: false
+
+    - name: Báo cáo deploy thành công
+      ansible.builtin.debug:
+        msg:
+          - "=== {{ inventory_hostname }} DEPLOY THÀNH CÔNG ==="
+          - "Image     : {{ image_tag if image_tag | length > 0 else 'build từ source' }}"
+          - "Health    : {{ health.content }}"
+          - "Tra từ    : {{ tra_tu.content }}"
+
+  # ===============================================================
+  # HANDLERS — chỉ chạy khi được notify, và chạy MỘT LẦN ở cuối
+  # ===============================================================
+  # Vì sao cần handler?
+  #   3 task ở trên đều notify cùng handler này. Nếu cả 3 đổi file,
+  #   handler vẫn chỉ chạy 1 lần -> không restart app 3 lần liên tiếp.
+  #
+  # Không file nào đổi -> handler KHÔNG chạy -> app không bị gián đoạn vô cớ.
+  handlers:
+    - name: Khoi dong lai ung dung
+      ansible.builtin.command:
+        cmd: >-
+          docker compose -p {{ compose_project }}
+          -f docker-compose.yml
+          {{ '-f docker-compose.prod.yml -f docker-compose.ansible.yml' if image_tag | length > 0 else '' }}
+          up -d --force-recreate
+        chdir: "{{ app_dir }}"

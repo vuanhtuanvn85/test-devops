@@ -1,0 +1,48 @@
+# ===================================================================
+# OVERLAY DÙNG KHI DEPLOY BẰNG ANSIBLE LÊN SERVER
+# ===================================================================
+#
+# Cách dùng (Ansible tự thêm file này, không phải gõ tay):
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.prod.yml \
+#                  -f docker-compose.ansible.yml up -d
+#
+# ===== VÌ SAO CẦN FILE THỨ BA? =====
+#
+# docker-compose.prod.yml đặt "db: build: ./db" — BUILD image db trên máy
+# đích. Điều đó đúng cho Jenkins (xem ghi chú trong file đó) nhưng SAI khi
+# deploy lên server, vì hai lý do:
+#
+# 1. NGUYÊN TẮC: server không build gì cả.
+#    Deploy từ registry nghĩa là máy đích chỉ kéo image đã test rồi chạy.
+#    Server có toolchain build là thừa, chậm, và mỗi server build ra một
+#    image hơi khác nhau -> cái bạn test không chắc là cái bạn chạy.
+#
+# 2. THỰC TẾ: trong lab, build trên máy đích LỖI HẲN.
+#    web1/web2 là container privileged nằm trong Docker Desktop. BuildKit
+#    lồng hai lớp như vậy không tạo được overlay mount:
+#        COPY init.sql ... -> failed to solve: mount source: "overlay",
+#        ... err: invalid argument
+#
+# ===== CÒN VẤN ĐỀ BIND MOUNT THÌ SAO? =====
+# docker-compose.prod.yml tránh bind mount init.sql vì với Jenkins (DooD),
+# daemon tìm đường dẫn trên HOST chứ không trong container Jenkins.
+#
+# Với Ansible thì KHÁC HẲN: Ansible đã copy init.sql lên ĐÚNG server đó
+# (task "Copy các file compose và db lên server"), và dockerd chạy ngay
+# trên server đó. Đường dẫn ./db/init.sql tồn tại thật -> mount được.
+#
+# Cùng một vấn đề, hai môi trường, hai cách giải. Đó là lý do tách file
+# thay vì sửa docker-compose.prod.yml.
+
+services:
+  db:
+    # Quay lại dùng image chính thức, KHÔNG build.
+    build: !reset null
+    image: postgres:16-alpine
+
+    # Mount lại init.sql từ file Ansible đã copy lên server.
+    # Postgres chỉ chạy file này khi volume pgdata còn rỗng (lần đầu).
+    volumes: !override
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro

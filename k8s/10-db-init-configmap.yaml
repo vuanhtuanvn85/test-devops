@@ -1,0 +1,47 @@
+# ConfigMap chứa NỘI DUNG FILE init.sql, mount vào container thành file thật.
+#
+# Bài học: ConfigMap không chỉ chứa biến môi trường - nó còn mount được thành FILE.
+# Đây là cách thay thế cho "volumes: ./db/init.sql:/docker-entrypoint-initdb.d/..."
+# trong docker-compose.yml.
+#
+# Vì sao không dùng db/Dockerfile như bản Compose nữa?
+#   Bản Compose phải nhúng init.sql vào image vì Jenkins chạy trong container
+#   không mount được đường dẫn của host. Trên K8s không có vấn đề đó: ConfigMap
+#   là tài nguyên của cluster, mọi node đều đọc được. Nên dùng lại image
+#   postgres:16-alpine chuẩn, sửa dữ liệu mẫu không cần build lại image.
+#
+# LƯU Ý: file này phải khớp nội dung với db/init.sql. Nếu sửa db/init.sql thì
+# sinh lại bằng:
+#   kubectl create configmap db-init --from-file=init.sql=db/init.sql \
+#     -n dictionary --dry-run=client -o yaml > k8s/10-db-init-configmap.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-init
+  namespace: dictionary
+data:
+  # Dấu "|" giữ nguyên xuống dòng của đoạn text bên dưới.
+  init.sql: |
+    -- File này được image postgres tự động chạy LẦN ĐẦU khi volume dữ liệu còn rỗng.
+    -- Muốn chạy lại sau khi sửa file: docker compose down -v (xoá volume) rồi up lại.
+    
+    CREATE TABLE IF NOT EXISTS words (
+      id         SERIAL PRIMARY KEY,
+      word       VARCHAR(100) NOT NULL UNIQUE,
+      definition TEXT         NOT NULL
+    );
+    
+    -- Migrate dữ liệu từ backend/dictionary.js (đã xoá) sang database
+    INSERT INTO words (word, definition) VALUES
+      ('apple',    'quả táo'),
+      ('book',     'quyển sách'),
+      ('computer', 'máy tính'),
+      ('dog',      'con chó'),
+      ('elephant', 'con voi'),
+      ('flower',   'bông hoa'),
+      ('guitar',   'đàn guitar'),
+      ('house',    'ngôi nhà'),
+      ('internet', 'mạng internet'),
+      ('juice',    'nước ép')
+    ON CONFLICT (word) DO NOTHING;

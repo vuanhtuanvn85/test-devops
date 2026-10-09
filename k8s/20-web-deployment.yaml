@@ -1,0 +1,144 @@
+# Deployment = quản lý một nhóm pod GIỐNG HỆT NHAU, không trạng thái.
+#
+# Đối chiếu Docker Compose: service "web", nhưng mạnh hơn hẳn:
+#   - Tự hồi phục: pod chết -> sinh lại ngay (giống restart: unless-stopped)
+#   - Scale ngang: kubectl scale --replicas=5 (Compose phải sửa file)
+#   - Rolling update: đổi image, thay pod từng cái một, KHÔNG downtime
+#   - Rollback: kubectl rollout undo - quay về bản trước trong vài giây
+#
+# Chuỗi phân cấp:  Deployment -> ReplicaSet -> Pod -> Container
+# Mỗi lần đổi image, Deployment tạo ReplicaSet MỚI và thu nhỏ cái cũ về 0.
+# ReplicaSet cũ vẫn được giữ lại - đó chính là thứ giúp rollback được.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: dictionary
+spec:
+  # 2 replica để thấy ngay: cân bằng tải, và rolling update không mất dịch vụ.
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: web
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 = luôn giữ đủ số pod đang phục vụ -> KHÔNG downtime.
+      # maxSurge: 1      = được phép tạo dư 1 pod trong lúc cập nhật.
+      # Trình tự: tạo pod mới -> chờ nó READY -> mới xoá 1 pod cũ.
+      maxUnavailable: 0
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      # initContainer chạy XONG rồi container chính mới được khởi động.
+      # Đây là bản K8s của "depends_on: condition: service_healthy".
+      #
+      # Vì sao cần? Deployment và StatefulSet khởi động SONG SONG. Không chờ thì
+      # web lên trước, không nối được db, log đầy lỗi (dù readinessProbe cuối cùng
+      # cũng xử lý được). Chờ ở đây cho log sạch và sinh viên dễ hiểu thứ tự.
+      initContainers:
+        - name: wait-for-db
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              echo "Chờ database $DB_HOST:$DB_PORT sẵn sàng..."
+              until pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER"; do
+                echo "  db chưa sẵn sàng, thử lại sau 2s..."
+                sleep 2
+              done
+              echo "Database đã sẵn sàng."
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef: { name: dictionary-config, key: DB_HOST }
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef: { name: dictionary-config, key: DB_PORT }
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: { name: dictionary-secret, key: POSTGRES_USER }
+
+      containers:
+        - name: web
+          # Tag ":local" dùng cho image tự build ở máy.
+          # Lên CI/CD thì thay bằng tag SHA, ví dụ:
+          #   kubectl set image deployment/web web=ghcr.io/<user>/dictionary-app-5:abc1234 -n dictionary
+          # KHÔNG dùng ":latest" để deploy - không biết đang chạy code nào, không rollback được.
+          image: dictionary-app-5:local
+
+          # IfNotPresent = có sẵn ở máy thì dùng luôn, không ra registry tải.
+          # BẮT BUỘC phải để vậy khi build image local (Docker Desktop / kind load),
+          # vì mặc định với tag :latest K8s sẽ luôn cố pull -> lỗi ErrImagePull.
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 3000
+
+          # envFrom = nạp TOÀN BỘ ConfigMap/Secret thành biến môi trường,
+          # thay vì liệt kê từng cái. Ngắn gọn hơn nhiều.
+          envFrom:
+            - configMapRef:
+                name: dictionary-config
+
+          env:
+            # backend/db.js đọc biến DB_USER/DB_PASSWORD, nhưng Secret lưu tên
+            # POSTGRES_USER/POSTGRES_PASSWORD (để dùng chung với image postgres).
+            # Tên khác nhau nên phải ánh xạ tay, không dùng envFrom được.
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: { name: dictionary-secret, key: POSTGRES_USER }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: dictionary-secret, key: POSTGRES_PASSWORD }
+
+          # ===== BA LOẠI PROBE - phần quan trọng nhất của file này =====
+          #
+          # startupProbe   : "khởi động xong chưa?"  - hỏng: giết. Chạy TRƯỚC 2 cái kia.
+          # livenessProbe  : "còn sống không?"       - hỏng: GIẾT container, restart.
+          # readinessProbe : "nhận request được chưa?" - hỏng: GỠ khỏi Service (không giết).
+          #
+          # Sai lầm kinh điển: trỏ liveness vào endpoint có hỏi database.
+          # Db chậm -> liveness hỏng -> K8s giết web -> web restart -> vẫn hỏng
+          # -> CrashLoopBackOff vô tận, dù lỗi nằm ở db chứ không phải web.
+          # Vì vậy /healthz KHÔNG hỏi db, còn /api/health thì có.
+
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+            # 20 x 3s = cho tối đa 60 giây để khởi động. Trong lúc này liveness
+            # chưa chạy -> app khởi động chậm cũng không bị giết oan.
+            failureThreshold: 20
+
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }   # KHÔNG hỏi database
+            periodSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet: { path: /api/health, port: http } # CÓ hỏi database (trả 503 nếu mất)
+            periodSeconds: 5
+            failureThreshold: 2
+
+          # requests = phần tài nguyên ĐƯỢC ĐẢM BẢO, và là căn cứ để scheduler
+          #            chọn node đặt pod vào.
+          # limits   = trần cứng. Vượt trần RAM -> bị giết vì OOMKilled.
+          #
+          # Không khai báo requests thì scheduler coi pod "không tốn gì", nhồi quá
+          # tải lên một node rồi cả node cùng chết. Luôn khai báo requests.
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"      # 50m = 0.05 lõi CPU
+            limits:
+              memory: "256Mi"
+              cpu: "500m"

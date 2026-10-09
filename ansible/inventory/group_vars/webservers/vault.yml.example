@@ -1,0 +1,32 @@
+# ===================================================================
+# MẪU FILE BÍ MẬT — làm theo 3 bước dưới đây
+# ===================================================================
+#
+# BƯỚC 1: copy file này thành vault.yml
+#   cp group_vars/webservers/vault.yml.example group_vars/webservers/vault.yml
+#
+# BƯỚC 2: sửa giá trị thật rồi mã hóa
+#   ansible-vault encrypt group_vars/webservers/vault.yml
+#   (Ansible hỏi mật khẩu — ĐẶT MẬT KHẨU VÀ NHỚ NÓ)
+#
+# BƯỚC 3: chạy playbook kèm cờ mở vault
+#   ansible-playbook playbooks/03-deploy-app.yml --ask-vault-pass
+#
+# ===== CÁC LỆNH VAULT HAY DÙNG =====
+#   ansible-vault view   group_vars/webservers/vault.yml   # xem mà không giải mã ra đĩa
+#   ansible-vault edit   group_vars/webservers/vault.yml   # sửa trực tiếp
+#   ansible-vault rekey  group_vars/webservers/vault.yml   # đổi mật khẩu vault
+#   ansible-vault decrypt group_vars/webservers/vault.yml  # giải mã (cẩn thận!)
+#
+# ===== VÌ SAO ĐẶT TIỀN TỐ "vault_" TRƯỚC TÊN BIẾN? =====
+# Mã hóa xong bạn KHÔNG đọc được tên biến trong file nữa.
+# Quy ước: biến bí mật đặt tên vault_xxx, rồi ở vars.yml hoặc playbook
+# gán sang tên thường:
+#     postgres_password: "{{ vault_postgres_password }}"
+# Nhờ đó nhìn vars.yml là biết biến nào đến từ vault.
+
+# Mật khẩu database
+vault_postgres_password: doi_thanh_mat_khau_manh_cua_ban
+
+# Personal Access Token của GitHub (quyền read:packages)
+vault_ghcr_token: ghp_thay_bang_token_that_cua_ban

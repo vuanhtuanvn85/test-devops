@@ -1,0 +1,28 @@
+# Service kiểu NodePort = mở app ra NGOÀI cluster qua một cổng của node.
+#
+# Đối chiếu Docker Compose: "ports: 3000:3000".
+#
+# Ba kiểu Service cần phân biệt:
+#   ClusterIP (mặc định) - chỉ gọi được TỪ TRONG cluster. Dùng cho service nội bộ (như db).
+#   NodePort             - mở cổng 30000-32767 trên MỌI node. Đơn giản, hợp lớp học.
+#   LoadBalancer         - xin IP công khai từ nhà cung cấp cloud. Ở máy local thì
+#                          treo "pending" mãi vì không có cloud nào cấp IP cả.
+#
+# Thực tế production dùng Ingress (file 22) chứ không phơi NodePort ra Internet.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: dictionary
+spec:
+  type: NodePort
+  selector:
+    # Chọn pod theo NHÃN. Mọi pod mang app=web đều được nhận request,
+    # bất kể thuộc ReplicaSet nào - đó là lý do rolling update không mất dịch vụ.
+    app: web
+  ports:
+    - name: http
+      port: 3000        # cổng của Service, dùng khi gọi từ trong cluster
+      targetPort: http  # cổng trong container (trỏ tới tên "http" ở Deployment)
+      nodePort: 30080   # cổng trên node -> mở trình duyệt http://localhost:30080

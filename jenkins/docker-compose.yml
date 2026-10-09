@@ -1,0 +1,61 @@
+# Dựng Jenkins chạy trên laptop.
+#
+#   cd jenkins
+#   docker compose up -d --build
+#   -> http://localhost:8080
+#
+# LƯU Ý: file này ĐỘC LẬP với docker-compose.yml của ứng dụng ở thư mục cha.
+# Jenkins là hạ tầng CI/CD, không phải một phần của app.
+
+services:
+  jenkins:
+    build: .
+    container_name: jenkins
+    ports:
+      - "8080:8080"    # giao diện web
+      - "50000:50000"  # cổng cho agent (bài này chưa dùng, để sẵn)
+    volumes:
+      # Dữ liệu Jenkins (job, config, lịch sử build) - sống sót khi xoá container
+      - jenkins_home:/var/jenkins_home
+
+      # ===== DÒNG QUAN TRỌNG NHẤT =====
+      # Cho container Jenkins điều khiển Docker của laptop.
+      # Nhờ đó "docker build" trong pipeline tạo image NGAY TRÊN laptop,
+      # và "docker compose up" deploy ra cổng 3000 của laptop.
+      # Thiếu dòng này pipeline báo "Cannot connect to the Docker daemon".
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    group_add:
+      # Cấp quyền đọc/ghi docker.sock cho user "jenkins" trong container.
+      # Trên macOS (Docker Desktop) socket thuộc group id 0.
+      # Trên Linux: đổi thành group id thật, xem bằng:  stat -c '%g' /var/run/docker.sock
+      - "0"
+
+    environment:
+      # Bỏ qua wizard hỏi tạo user - bài học đỡ mất bước.
+      # KHÔNG dùng cách này cho Jenkins thật ngoài production.
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+
+    # ===== Nối Jenkins vào mạng của lab Ansible (thêm ở buổi 7) =====
+    # Mặc định mỗi compose project có mạng riêng, các container ở 2 mạng
+    # khác nhau KHÔNG gọi được nhau bằng tên. Jenkins cần SSH tới web1/web2
+    # nên phải vào chung mạng với chúng.
+    networks:
+      - default      # mạng riêng của Jenkins (giữ nguyên)
+      - labnet       # mạng của ansible-web1 / ansible-web2
+
+    restart: unless-stopped
+
+volumes:
+  jenkins_home:
+
+networks:
+  # external: true = KHÔNG tự tạo, dùng mạng đã có do lab tạo ra.
+  # Thiếu dòng này, compose tạo mạng mới tên "jenkins_labnet" và Jenkins
+  # vẫn không thấy web1/web2 — lỗi rất khó đoán vì compose up vẫn thành công.
+  #
+  # Phải chạy ./ansible/lab/setup-lab.sh TRƯỚC, nếu không sẽ lỗi:
+  #   network ansible-labnet declared as external, but could not be found
+  labnet:
+    external: true
+    name: ansible-labnet
