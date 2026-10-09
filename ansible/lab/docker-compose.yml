@@ -40,6 +40,10 @@ services:
     # privileged: cần cho Bài 4 — chạy Docker BÊN TRONG server ảo này.
     # Server thật không cần dòng này; đây là cái giá của việc giả lập máy.
     privileged: true
+    # Máy thật bật lại thì dịch vụ chạy lại. Có dòng này thì khởi động lại
+    # Docker Desktop (hay laptop) xong, web1/web2 tự lên, và entrypoint
+    # tự bật lại dockerd -> app trở lại không cần làm gì.
+    restart: unless-stopped
     networks:
       - labnet
 
@@ -51,6 +55,7 @@ services:
       - "2202:22"
       - "8002:3000"
     privileged: true
+    restart: unless-stopped
     networks:
       - labnet
 

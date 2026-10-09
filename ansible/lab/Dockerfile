@@ -59,6 +59,17 @@ RUN sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/
 
 EXPOSE 22
 
-# -D : chạy ở foreground (container cần tiến trình chính không thoát)
-# -e : ghi log ra stderr để "docker logs" xem được
-CMD ["/usr/sbin/sshd", "-D", "-e"]
+# procps: để entrypoint dùng pgrep kiểm tra dockerd đã chạy chưa
+RUN apt-get update && apt-get install -y --no-install-recommends procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Entrypoint đóng vai systemd tối giản: bật lại dockerd (nếu đã cài) rồi
+# chuyển quyền cho sshd. Xem lý do chi tiết trong entrypoint.sh.
+#
+# Trước đây dùng CMD ["/usr/sbin/sshd","-D","-e"] trực tiếp. Hệ quả: Docker
+# Desktop khởi động lại -> container chạy lại với CHỈ sshd -> dockerd chết,
+# app biến mất, mà Ansible vẫn ping OK nên rất khó đoán.
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+CMD ["/usr/local/bin/entrypoint.sh"]
