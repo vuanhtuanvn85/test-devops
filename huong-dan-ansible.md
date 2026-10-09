@@ -1269,6 +1269,17 @@ Kiểm tra nhanh cả hai cùng chạy đúng bản mới:
 for p in 8001 8002; do echo -n "$p: "; curl -s localhost:$p/api/health; echo; done
 ```
 
+**Cửa sổ thứ 3 — xem log app của cả hai server** (chỉ cho sinh viên thấy app
+khởi động lại lần lượt, không cùng lúc):
+
+```bash
+cd ansible
+watch -n2 'ansible all -m shell -a "docker logs --tail 3 dictionary-web-1" -b'
+```
+
+Pipeline fail thì đây cũng là lệnh đầu tiên nên chạy — xem mục
+[13b](#13b-xem-log-của-web1-và-web2).
+
 Rollback cũng là một lệnh, cũng rolling:
 
 ```bash
@@ -1639,15 +1650,175 @@ Nguyên tắc: nội dung template chỉ được phụ thuộc vào **biến**,
 
 ### App không trả lời `/api/health`
 
-```bash
-# Xem log container trên server
-ansible web1 -m shell -a \
-  "cd /opt/dictionary-app && docker compose -p dictionary logs web --tail 50" --become
+Xem log trước khi đoán — mục [13b](#13b-xem-log-của-web1-và-web2) hướng dẫn chi tiết.
 
-# Kiểm tra database
+```bash
+# Log app trên CẢ HAI server, một lệnh
+ansible all -m shell -a "docker logs --tail 50 dictionary-web-1" -b
+
+# Kiểm tra database có dữ liệu chưa
 ansible web1 -m shell -a \
-  "cd /opt/dictionary-app && docker compose -p dictionary exec -T db psql -U dictuser -d dictionary -c 'SELECT count(*) FROM words;'" --become
+  "docker exec dictionary-db-1 psql -U dictuser -d dictionary -c 'SELECT count(*) FROM words;'" -b
 ```
+
+---
+
+## 13b. Xem log của web1 và web2
+
+Khi app không chạy đúng, log là chỗ đầu tiên phải xem — đừng đoán.
+
+Có **ba tầng log**, hỏng ở tầng nào thì xem tầng đó:
+
+| Tầng | Xem gì | Khi nào |
+| --- | --- | --- |
+| 1. App (`web`) | Node.js in ra gì | App trả 500, không kết nối được db |
+| 2. Database (`db`) | Postgres khởi tạo, query lỗi | `relation "words" does not exist` |
+| 3. `dockerd` trên server | Daemon không tạo được container | Container không lên, lỗi mount/overlay |
+
+### 13b.1. Cách nhanh nhất — Ansible hỏi cả hai server một lượt
+
+Đây là cách nên dùng, vì **so sánh được hai server cạnh nhau**:
+
+```bash
+cd ansible
+
+# Log app
+ansible all -m shell -a "docker logs --tail 30 dictionary-web-1" -b
+
+# Log database
+ansible all -m shell -a "docker logs --tail 30 dictionary-db-1" -b
+
+# Chỉ một server
+ansible web1 -m shell -a "docker logs --tail 30 dictionary-web-1" -b
+```
+
+Output ghi rõ `web1 | CHANGED` rồi `web2 | CHANGED`, nên biết dòng nào của máy nào:
+
+```
+web1 | CHANGED | rc=0 >>
+Server đang chạy tại http://localhost:3000
+web2 | CHANGED | rc=0 >>
+Server đang chạy tại http://localhost:3000
+```
+
+Đây chính là giá trị của Ansible khi đi gỡ lỗi: **một lệnh, N máy**. Server thứ
+ba thì vẫn đúng lệnh đó.
+
+> **`-b` là viết tắt của `--become`** (chạy bằng sudo).
+>
+> Với các lệnh `docker` ở trên thì **bỏ `-b` vẫn chạy được**, vì
+> `02-install-docker.yml` đã thêm user `deploy` vào group `docker`:
+>
+> ```bash
+> ansible all -m shell -a "groups deploy"
+> # deploy : deploy sudo docker
+> ```
+>
+Trong lab này, **mọi lệnh xem log ở mục 13b đều chạy được mà không cần `-b`**
+(`/var/log/dockerd.log` có quyền `644`, ai cũng đọc được).
+
+Nhưng vẫn nên giữ `-b` thành thói quen, vì server production thường khắt khe
+hơn: không cho user thường vào group `docker` (vào group đó gần như tương
+đương quyền root), và log hệ thống hay bị siết còn `640`. Giữ `-b` thì lệnh
+chạy được ở cả hai kiểu cấu hình — bỏ đi thì có máy chạy máy không.
+
+> ### CÁI BẪY: `--format` làm Ansible chết
+>
+> Gõ lệnh này sẽ **lỗi**, không phải lỗi Docker:
+>
+> ```bash
+> ansible all -m shell -a "docker ps --format '{{.Names}}'" -b
+> ```
+>
+> ```
+> Syntax error in template: unexpected '.'
+> ```
+>
+> Vì `{{ }}` là cú pháp biến của Jinja2. Ansible thấy `{{.Names}}` thì tưởng
+> là biến của nó và cố render trước khi gửi lệnh đi.
+>
+> Hai cách thoát:
+>
+> ```bash
+> # Cách 1 (đơn giản nhất): bỏ --format
+> ansible all -m shell -a "docker ps" -b
+>
+> # Cách 2: bọc {% raw %} để Ansible bỏ qua
+> ansible all -m shell -a "docker ps --format 'table {% raw %}{{.Names}}\t{{.Status}}{% endraw %}'" -b
+> ```
+
+### 13b.2. Xem trực tiếp bằng docker exec (nhanh, gọn)
+
+Vì web1/web2 là container trên laptop, vào thẳng được — không cần SSH:
+
+```bash
+# Log app
+docker exec ansible-web1 docker logs --tail 50 dictionary-web-1
+docker exec ansible-web2 docker logs --tail 50 dictionary-web-1
+
+# Theo dõi realtime (Ctrl+C để thoát)
+docker exec ansible-web1 docker logs -f dictionary-web-1
+
+# Log database
+docker exec ansible-web1 docker logs --tail 50 dictionary-db-1
+```
+
+Cách này **chỉ dùng được trong lab**. Server thật không có `docker exec` từ
+ngoài vào — phải SSH hoặc dùng Ansible. Nên tập dùng cách 13b.1 cho đúng
+thói quen.
+
+### 13b.3. SSH vào server rồi xem như server thật
+
+Giống hệt khi gỡ lỗi production:
+
+```bash
+ssh -i ~/.ssh/ansible_lab -o IdentitiesOnly=yes -p 2201 deploy@localhost
+
+# Rồi bên trong:
+sudo docker ps
+sudo docker logs --tail 50 dictionary-web-1
+sudo docker compose -p dictionary -f /opt/dictionary-app/docker-compose.yml logs web
+```
+
+### 13b.4. Log của dockerd — khi container không lên được
+
+Hai tầng trên chỉ có log khi container **đã chạy**. Nếu container không tạo
+được thì phải xem log của daemon:
+
+```bash
+ansible all -m shell -a "tail -50 /var/log/dockerd.log" -b
+```
+
+Đây là nơi tìm thấy lỗi `overlay ... invalid argument` ở mục 13 — lỗi mà
+`docker logs` không bao giờ cho thấy, vì container chưa kịp sinh ra.
+
+### 13b.5. Xem log từ Jenkins
+
+Pipeline fail ở stage 7/8 thì log Ansible đã nằm trong console log của Jenkins.
+Muốn lấy thêm log app:
+
+```bash
+# Từ laptop, sau khi build fail
+docker exec jenkins sh -c 'cd /var/jenkins_home/workspace/tmp/ansible && \
+  ansible all -i inventory/hosts-ci.ini -m shell \
+    -a "docker logs --tail 50 dictionary-web-1" -b \
+    -e ansible_ssh_private_key_file=/tmp/ansible_lab_key'
+```
+
+Lưu ý: `/tmp/ansible_lab_key` bị **xoá sau mỗi build** (khối `post { always }`
+của stage 7), nên lệnh trên chỉ chạy được giữa lúc build đang diễn ra. Sau khi
+build xong thì dùng cách 13b.1 từ laptop.
+
+### 13b.6. Bảng tra nhanh
+
+| Triệu chứng | Xem log nào |
+| --- | --- |
+| `localhost:8001` không mở được | `docker ps` trên web1 — container có chạy không |
+| Mở được nhưng trả 500 | Log **app** |
+| `relation "words" does not exist` | Log **db** — init.sql có chạy không |
+| `{"db":"disconnected"}` | Log **db** trước, rồi log app |
+| Container `Created` mà không `Up` | Log **dockerd** |
+| Deploy xong mà vẫn bản cũ | `docker ps` xem cột IMAGE — tag có đổi không |
 
 ---
 
