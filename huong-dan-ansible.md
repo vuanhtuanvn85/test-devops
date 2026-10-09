@@ -215,6 +215,42 @@ Kết quả mong đợi:
 > nó vẫn thử tất cả khóa trong `ssh-agent` trước. Xem mục
 > [13](#too-many-authentication-failures) để hiểu vì sao điều đó làm lab chết.
 
+### 4.2b. Hai cổng cho hai mục đích khác nhau
+
+Mỗi "server" ảo mở **hai** cổng ra laptop:
+
+| Cổng laptop | → trong container | Dùng để |
+| --- | --- | --- |
+| 2201 / 2202 | 22 (SSH) | Ansible **quản lý** server |
+| 8001 / 8002 | 3000 (app) | **Mở browser** xem app |
+
+Sau khi deploy xong, mở trong browser:
+
+```
+web1 -> http://localhost:8001
+web2 -> http://localhost:8002
+```
+
+> **Dễ nhầm:** `http://localhost:3000` **KHÔNG phải** web1 hay web2 — đó là
+> stack `dictionary-prod` mà Jenkins stage 5 deploy lên chính laptop. Khi demo,
+> ba địa chỉ này là ba thứ hoàn toàn khác nhau:
+>
+> | Địa chỉ | Chạy ở đâu | Do ai deploy |
+> | --- | --- | --- |
+> | `localhost:3000` | laptop | Jenkins stage 5 (`docker compose`) |
+> | `localhost:8001` | **web1** | Ansible stage 7 |
+> | `localhost:8002` | **web2** | Ansible stage 7 |
+>
+> Cả ba cùng trả `{"db":"connected","words":10}` nên nhìn output không phân
+> biệt được — phải nhìn cổng.
+
+Vì sao dãy `800x` mà không phải `3000`/`3001`? Vì cổng 3000 trên laptop đã bị
+stack của Jenkins chiếm. Hai thứ cùng xin một cổng thì container thứ hai không
+khởi động được.
+
+Nếu app chưa deploy, mở `localhost:8001` sẽ báo "connection reset" — cổng đã
+forward nhưng chưa có gì nghe ở đầu bên kia. Deploy xong (mục 7) thì vào được.
+
 Xoá lab khi học xong:
 
 ```bash
@@ -585,10 +621,10 @@ git rev-parse --short=7 HEAD   # 7 ký tự (Jenkinsfile dùng)
 > **CẢNH BÁO: hai CI trong repo này đặt tên image KHÁC NHAU.** Đây là chỗ rất
 > dễ mất thời gian.
 >
-> | CI | Tên image | Tag |
-> | --- | --- | --- |
-> | GitHub Actions | `ghcr.io/<user>/test-devops`**`/web`** | SHA **đầy đủ** (40 ký tự) |
-> | Jenkins | `ghcr.io/<user>/test-devops` | SHA **7 ký tự** |
+> | CI             | Tên image                                       | Tag                                  |
+> | -------------- | ------------------------------------------------ | ------------------------------------ |
+> | GitHub Actions | `ghcr.io/<user>/test-devops`**`/web`** | SHA**đầy đủ** (40 ký tự) |
+> | Jenkins        | `ghcr.io/<user>/test-devops`                   | SHA**7 ký tự**               |
 >
 > Dùng CI nào thì lấy đúng tên của CI đó. Lấy lẫn sẽ bị
 > `manifest unknown` hoặc `denied`.
@@ -614,11 +650,11 @@ bấm vào package → tab **Versions** liệt kê mọi tag đã push.
 
 **Nếu pull báo lỗi:**
 
-| Lỗi | Nguyên nhân |
-| --- | --- |
-| `manifest unknown` | Tag không tồn tại — sai SHA, hoặc CI chưa push xong, hoặc lẫn tên giữa 2 CI |
-| `denied` / `unauthorized` | Package đang private → `docker login ghcr.io -u <user>` với PAT có `read:packages` |
-| `name unknown` | Sai tên image (thiếu/thừa `/web`) |
+| Lỗi                          | Nguyên nhân                                                                             |
+| ----------------------------- | ----------------------------------------------------------------------------------------- |
+| `manifest unknown`          | Tag không tồn tại — sai SHA, hoặc CI chưa push xong, hoặc lẫn tên giữa 2 CI     |
+| `denied` / `unauthorized` | Package đang private →`docker login ghcr.io -u <user>` với PAT có `read:packages` |
+| `name unknown`              | Sai tên image (thiếu/thừa`/web`)                                                     |
 
 ### 7.2. Kiểm tra bằng tay
 
@@ -1103,9 +1139,9 @@ cd jenkins && docker compose up -d --build
 
 ### 11.6. Thêm credential vào Jenkins
 
-| Loại                  | ID                   | Nội dung                                    |
-| ---------------------- | -------------------- | -------------------------------------------- |
-| Secret file            | `ansible-lab-key`  | File`~/.ssh/ansible_lab`                   |
+| Loại                  | ID                   | Nội dung                                     |
+| ---------------------- | -------------------- | --------------------------------------------- |
+| Secret file            | `ansible-lab-key`  | File`~/.ssh/ansible_lab`                    |
 | Username with password | `ghcr-credentials` | user GitHub + PAT (đã có từ bài Jenkins) |
 
 PAT cần quyền **`write:packages`** (để Jenkins push) và **`read:packages`**
@@ -1197,8 +1233,23 @@ docker exec jenkins sh -c \
 git add -A && git commit -m "them tu moi" && git push
 ```
 
-Rồi mở Jenkins xem pipeline chạy. Trong lúc chờ, mở 2 cửa sổ theo dõi để
-**thấy rolling update xảy ra thật**:
+Rồi mở Jenkins xem pipeline chạy.
+
+**Cách trực quan nhất — mở 2 tab browser cạnh nhau:**
+
+```
+Tab 1 -> http://localhost:8001     (web1)
+Tab 2 -> http://localhost:8002     (web2)
+```
+
+Bấm F5 liên tục cả hai trong lúc pipeline chạy tới stage 7. Sinh viên sẽ thấy
+**web1 gián đoạn vài giây rồi hồi phục, trong khi web2 vẫn phục vụ bình
+thường** — rồi mới tới lượt web2. Không bao giờ cả hai cùng chết.
+
+Đó chính là ý nghĩa của rolling update: người dùng cuối (nếu có load balancer
+phía trước) **không thấy downtime** dù hệ thống vừa nâng cấp toàn bộ.
+
+**Xem bằng dòng lệnh** (bổ sung, để thấy image tag đổi):
 
 ```bash
 # Cửa sổ 1
@@ -1211,6 +1262,12 @@ watch -n1 'docker exec ansible-web2 docker ps --format "{{.Image}} {{.Status}}"'
 vẫn phục vụ**. Chỉ khi web1 khỏe lại thì web2 mới bắt đầu đổi. Xem cột
 `Status` — thời gian uptime của hai máy lệch nhau vài chục giây, đó chính là
 bằng chứng của `serial: 1`.
+
+Kiểm tra nhanh cả hai cùng chạy đúng bản mới:
+
+```bash
+for p in 8001 8002; do echo -n "$p: "; curl -s localhost:$p/api/health; echo; done
+```
 
 Rollback cũng là một lệnh, cũng rolling:
 
@@ -1425,11 +1482,11 @@ withEnv(["TAG_SHA=${env.TAG_SHA}"]) {
 }
 ```
 
-| Lớp | Tác dụng |
-| --- | --- |
-| `'...'` nháy đơn | Groovy KHÔNG nội suy token vào chuỗi → không hiện trong log Jenkins |
-| Biến môi trường | Không viết giá trị lên dòng lệnh → không lộ trong `ps aux` của máy đích |
-| `no_log: true` | Ansible không in nội dung task ra output |
+| Lớp                  | Tác dụng                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| `'...'` nháy đơn | Groovy KHÔNG nội suy token vào chuỗi → không hiện trong log Jenkins             |
+| Biến môi trường   | Không viết giá trị lên dòng lệnh → không lộ trong`ps aux` của máy đích |
+| `no_log: true`      | Ansible không in nội dung task ra output                                             |
 
 Dùng `"..."` (nháy kép) là **sai nghiêm trọng**: Groovy thay `$GHCR_CREDS_PSW`
 bằng giá trị thật trước khi chạy, token hiện nguyên văn trong console log mà
