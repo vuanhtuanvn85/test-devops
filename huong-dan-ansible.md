@@ -1675,6 +1675,55 @@ Có **ba tầng log**, hỏng ở tầng nào thì xem tầng đó:
 | 2. Database (`db`) | Postgres khởi tạo, query lỗi | `relation "words" does not exist` |
 | 3. `dockerd` trên server | Daemon không tạo được container | Container không lên, lỗi mount/overlay |
 
+### 13b.0. CÁI BẪY LỚN NHẤT: hai tầng container
+
+Đây là lỗi gần như ai cũng mắc lần đầu. Gõ lệnh này:
+
+```bash
+docker logs ansible-web1          # SAI nếu muốn xem log app
+```
+
+và nhận được một màn hình toàn SSH:
+
+```
+Accepted publickey for deploy from 172.18.0.4 port 53596 ssh2: ED25519 SHA256:...
+Received disconnect from 192.168.65.1 port 63899:11: disconnected by user
+Disconnected from user deploy 192.168.65.1 port 63899
+```
+
+**Không phải log hỏng.** Đó là log đúng — nhưng của **sshd**, không phải app.
+
+Lý do nằm ở chỗ `ansible-web1` **giả làm MÁY, không phải DỊCH VỤ**. Tiến trình
+chính của nó là `sshd` (xem `CMD ["/usr/sbin/sshd","-D","-e"]` trong
+`lab/Dockerfile`). App từ điển chạy trong một container **lồng bên trong** máy đó:
+
+```
+Docker Desktop (laptop)
+└── ansible-web1              <- "MÁY", tiến trình chính = sshd
+    │                            docker logs ansible-web1 -> log SSH
+    └── dockerd (bên trong)
+        ├── dictionary-web-1  <- APP  ← cái bạn muốn xem
+        └── dictionary-db-1   <- DB
+```
+
+Nên phải **đi xuyên hai tầng**:
+
+```bash
+#          tầng 1          tầng 2
+docker exec ansible-web1   docker logs dictionary-web-1
+```
+
+| Lệnh | Cho log của |
+| --- | --- |
+| `docker logs ansible-web1` | sshd của máy — ai SSH vào, lúc nào |
+| `docker exec ansible-web1 docker logs dictionary-web-1` | **app từ điển** |
+| `docker exec ansible-web1 docker logs dictionary-db-1` | Postgres |
+
+> Log sshd cũng hữu ích, đừng bỏ hẳn: nó cho thấy Ansible có kết nối được
+> không. Trong đoạn log trên, `172.18.0.4` là **Jenkins** (trong mạng
+> `ansible-labnet`) còn `192.168.65.1` là **laptop** của bạn — hai nguồn
+> SSH khác nhau, nhận ra ngay ai đang vào máy.
+
 ### 13b.1. Cách nhanh nhất — Ansible hỏi cả hai server một lượt
 
 Đây là cách nên dùng, vì **so sánh được hai server cạnh nhau**:
@@ -1819,6 +1868,51 @@ build xong thì dùng cách 13b.1 từ laptop.
 | `{"db":"disconnected"}` | Log **db** trước, rồi log app |
 | Container `Created` mà không `Up` | Log **dockerd** |
 | Deploy xong mà vẫn bản cũ | `docker ps` xem cột IMAGE — tag có đổi không |
+| Thấy log SSH thay vì log app | Xem [13b.0](#13b0-cái-bẫy-lớn-nhất-hai-tầng-container) — gõ sai tầng container |
+
+### 13b.7. Đọc access log
+
+App ghi **một dòng cho mỗi request**:
+
+```
+[2026-10-09T16:19:27.890Z] web1 GET /api/define/dog 200 1ms
+     │                      │    │   │               │   └─ thời gian xử lý
+     │                      │    │   └─ đường dẫn    └─ HTTP status
+     │                      │    └─ method
+     │                      └─ SERVER NÀO trả lời
+     └─ thời điểm (UTC)
+```
+
+Nhờ cột tên server, gộp log hai máy vẫn phân biệt được:
+
+```bash
+cd ansible
+ansible all -m shell -a "docker logs --tail 5 dictionary-web-1" -b
+```
+
+```
+web1 | CHANGED | rc=0 >>
+[...] web1 GET /api/define/computer 200 3ms
+[...] web1 GET /api/define/khongco 404 1ms
+web2 | CHANGED | rc=0 >>
+[...] web2 GET /api/define/juice 200 8ms
+```
+
+**Những thứ đọc được ngay từ access log:**
+
+| Nhìn thấy | Nghĩa là |
+| --- | --- |
+| Không có dòng nào khi tra từ | Request **không tới được** app — sai cổng, hoặc container chết |
+| `404` | App sống, nhưng từ đó không có trong database |
+| `503` | App sống, **database hỏng** → xem log db |
+| `200` nhưng chậm (vài trăm ms) | Query chậm, hoặc db đang quá tải |
+| Chỉ `web1` có log, `web2` không | Bạn đang gọi vào một máy thôi (không có load balancer) |
+
+> **Vì sao `SERVER_NAME` chứ không phải hostname của container?**
+> Hostname trong container là ID ngẫu nhiên kiểu `c80e68fabcd0` và **đổi sau
+> mỗi lần deploy** — xem log không biết máy nào. Ansible điền `SERVER_NAME`
+> từ `inventory_hostname` (xem `templates/env.j2`) nên luôn là `web1`/`web2`.
+> Chạy tay ở laptop không đặt biến thì mặc định là `laptop`.
 
 ---
 
