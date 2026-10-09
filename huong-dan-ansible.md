@@ -521,13 +521,7 @@ ansible-playbook playbooks/03-deploy-app.yml \
 > anti-pattern — mỗi server build ra image hơi khác nhau, cần toolchain trên
 > server, deploy chậm, và cái bạn test không chắc là cái bạn chạy.
 >
-> Chưa có image trên registry? Chạy Jenkins hoặc GitHub Actions trước
-> (mục 11), hoặc build và push tay:
->
-> ```bash
-> docker build -t ghcr.io/<user>/test-devops:thu1 .
-> docker push ghcr.io/<user>/test-devops:thu1
-> ```
+> **Làm sao biết `image_tag` của mình là gì?** Xem mục 7.1b ngay dưới.
 
 Có `image_tag`, playbook tự thêm `-f docker-compose.prod.yml` và
 `-f docker-compose.ansible.yml` nên compose **kéo image** thay vì build.
@@ -550,6 +544,81 @@ ok: [web1] => {
 Hai dòng cuối là bằng chứng quan trọng nhất: **app trả lời thật, database có
 đúng 10 từ, tra từ ra nghĩa tiếng Việt**. Container "đang chạy" không đủ — nó
 có thể đang crash liên tục.
+
+### 7.1b. Làm sao biết `image_tag` của mình?
+
+`image_tag` **không phải thứ bạn tự nghĩ ra** — nó là tên image **đã thực sự
+tồn tại trên registry**. Chưa ai push image thì chưa có `image_tag` nào cả.
+
+Công thức luôn là:
+
+```
+<registry>/<chủ sở hữu>/<tên image>:<tag>
+```
+
+Trong project này `tag` = **git SHA của commit đã build**. Vì sao SHA mà không
+phải `v1`, `v2`? Vì SHA trả lời được câu hỏi quan trọng nhất khi có sự cố:
+*"bản đang chạy trên production là code nào?"* — `git show <sha>` là ra ngay.
+
+**Bước 1 — chắc chắn code đã lên GitHub:**
+
+```bash
+git push
+```
+
+**Bước 2 — xem CI đã build xong chưa:**
+
+```bash
+gh run list --limit 3          # hoặc mở tab Actions trên GitHub
+```
+
+Phải thấy `completed success`. Đang `in_progress` thì chờ; `failure` thì chưa
+có image, phải sửa lỗi build trước.
+
+**Bước 3 — lấy SHA:**
+
+```bash
+git rev-parse HEAD          # SHA đầy đủ (GitHub Actions dùng)
+git rev-parse --short=7 HEAD   # 7 ký tự (Jenkinsfile dùng)
+```
+
+> **CẢNH BÁO: hai CI trong repo này đặt tên image KHÁC NHAU.** Đây là chỗ rất
+> dễ mất thời gian.
+>
+> | CI | Tên image | Tag |
+> | --- | --- | --- |
+> | GitHub Actions | `ghcr.io/<user>/test-devops`**`/web`** | SHA **đầy đủ** (40 ký tự) |
+> | Jenkins | `ghcr.io/<user>/test-devops` | SHA **7 ký tự** |
+>
+> Dùng CI nào thì lấy đúng tên của CI đó. Lấy lẫn sẽ bị
+> `manifest unknown` hoặc `denied`.
+
+**Bước 4 — kiểm chứng trước khi deploy.** Đừng đoán, hãy thử pull:
+
+```bash
+IMG=ghcr.io/vuanhtuanvn85/test-devops/web:$(git rev-parse HEAD)
+docker pull $IMG
+```
+
+Pull được là `image_tag` đúng. Rồi mới deploy:
+
+```bash
+ansible-playbook playbooks/03-deploy-app.yml -e image_tag=$IMG
+```
+
+Dùng biến `$IMG` thay vì gõ tay cả chuỗi dài — vừa đỡ sai, vừa đảm bảo SHA
+khớp đúng commit đang ở trong thư mục.
+
+**Cách khác: xem trên web.** GitHub → trang repo → cột phải, mục **Packages** →
+bấm vào package → tab **Versions** liệt kê mọi tag đã push.
+
+**Nếu pull báo lỗi:**
+
+| Lỗi | Nguyên nhân |
+| --- | --- |
+| `manifest unknown` | Tag không tồn tại — sai SHA, hoặc CI chưa push xong, hoặc lẫn tên giữa 2 CI |
+| `denied` / `unauthorized` | Package đang private → `docker login ghcr.io -u <user>` với PAT có `read:packages` |
+| `name unknown` | Sai tên image (thiếu/thừa `/web`) |
 
 ### 7.2. Kiểm tra bằng tay
 
@@ -607,11 +676,11 @@ docker compose -p dictionary \
 
 File sau **đè** lên file trước. Mỗi file giải quyết một việc:
 
-| File | Vai trò |
-| --- | --- |
-| `docker-compose.yml` | Định nghĩa gốc: `web: build: .`, `db: postgres:16-alpine` + mount `init.sql` |
-| `docker-compose.prod.yml` | `web` dùng `image:` thay vì build. `db` **build** từ `./db` (vì Jenkins DooD không mount được) |
-| `docker-compose.ansible.yml` | `db` quay lại dùng image chính thức + mount `init.sql` |
+| File                           | Vai trò                                                                                                             |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `docker-compose.yml`         | Định nghĩa gốc:`web: build: .`, `db: postgres:16-alpine` + mount `init.sql`                                |
+| `docker-compose.prod.yml`    | `web` dùng `image:` thay vì build. `db` **build** từ `./db` (vì Jenkins DooD không mount được) |
+| `docker-compose.ansible.yml` | `db` quay lại dùng image chính thức + mount `init.sql`                                                       |
 
 Nhìn qua thì file thứ ba có vẻ "hủy" file thứ hai. Thực ra chúng giải quyết
 **hai môi trường khác nhau** của cùng một vấn đề:
@@ -913,11 +982,11 @@ Không ai SSH vào server nữa. Muốn biết server cấu hình thế nào th�
 
 Câu hỏi đáng đặt ra, vì repo này có cả `.github/workflows/`.
 
-| | GitHub Actions | Jenkins (trong lab này) |
-| --- | --- | --- |
-| Chạy ở đâu | Cloud của GitHub | Container trên laptop bạn |
-| Thấy web1/web2? | **Không** | **Có** (cùng mạng Docker) |
-| Demo trọn vòng? | Cần VPS thật có IP public | Chạy được ngay trên máy |
+|                   | GitHub Actions               | Jenkins (trong lab này)           |
+| ----------------- | ---------------------------- | ---------------------------------- |
+| Chạy ở đâu    | Cloud của GitHub            | Container trên laptop bạn        |
+| Thấy web1/web2?  | **Không**             | **Có** (cùng mạng Docker) |
+| Demo trọn vòng? | Cần VPS thật có IP public | Chạy được ngay trên máy      |
 
 Runner của GitHub nằm ngoài internet, không SSH vào `localhost:2201` của laptop
 bạn được. Jenkins chạy ngay trong máy nên nối được vào mạng của lab.
@@ -980,9 +1049,9 @@ network ansible-labnet declared as external, but could not be found
 
 Cùng hai server, nhưng **đường đi khác nhau tùy chỗ gọi**:
 
-| Gọi từ | Đường đi | Inventory |
-| --- | --- | --- |
-| Laptop | cổng forward 2201/2202 | `localhost:2201` |
+| Gọi từ          | Đường đi                 | Inventory           |
+| ----------------- | ---------------------------- | ------------------- |
+| Laptop            | cổng forward 2201/2202      | `localhost:2201`  |
 | Container Jenkins | mạng labnet, cổng 22 thật | `ansible-web1:22` |
 
 Jenkins **không dùng được** `localhost:2201`, vì `localhost` trong container
@@ -1022,8 +1091,7 @@ Ba chi tiết đều có lý do:
   Playbook của ta chỉ dùng module builtin (`file`, `copy`, `template`,
   `command`, `uri`, `assert`) nên core là đủ.
 - **`openssh-client`** — image Jenkins gốc **không có lệnh `ssh`**. Thiếu nó
-  Ansible báo lỗi lạ: `Unable to execute ssh command line on a controller:
-  [Errno 2] No such file or directory: b'ssh'`.
+  Ansible báo lỗi lạ: `Unable to execute ssh command line on a controller: [Errno 2] No such file or directory: b'ssh'`.
 - **`--break-system-packages`** — Debian 12 chặn pip ghi vào Python hệ thống.
   Trong container thì không cần lớp bảo vệ đó.
 
@@ -1035,9 +1103,9 @@ cd jenkins && docker compose up -d --build
 
 ### 11.6. Thêm credential vào Jenkins
 
-| Loại | ID | Nội dung |
-| --- | --- | --- |
-| Secret file | `ansible-lab-key` | File `~/.ssh/ansible_lab` |
+| Loại                  | ID                   | Nội dung                                    |
+| ---------------------- | -------------------- | -------------------------------------------- |
+| Secret file            | `ansible-lab-key`  | File`~/.ssh/ansible_lab`                   |
 | Username with password | `ghcr-credentials` | Tài khoản GHCR (đã có từ bài Jenkins) |
 
 Manage Jenkins → Credentials → Add.
