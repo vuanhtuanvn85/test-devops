@@ -20,10 +20,17 @@ const PORT = process.env.PORT || 3000;
 // Dùng res.on('finish') thay vì log ngay: lúc đó mới biết status code
 // và tính được thời gian xử lý thật.
 //
-// HOSTNAME: in tên máy để biết server NÀO trả lời. Khi có 2 server trở
-// lên, đây là thứ giúp phân biệt log của web1 với web2.
+// TÊN SERVER: in ra để biết server NÀO trả lời. Khi có 2 server trở lên,
+// đây là thứ giúp phân biệt log của web1 với web2.
+//
+// Ưu tiên biến SERVER_NAME (Ansible điền từ inventory: web1, web2...).
+// Không có thì lùi về hostname của container.
+//
+// Vì sao không dùng thẳng os.hostname()? Trong container nó là ID ngẫu
+// nhiên kiểu "c80e68fabcd0" và ĐỔI sau mỗi lần deploy -> xem log không
+// biết là máy nào.
 const os = require('os');
-const HOSTNAME = os.hostname();
+const HOSTNAME = process.env.SERVER_NAME || os.hostname();
 
 app.use((req, res, next) => {
   const batDau = Date.now();

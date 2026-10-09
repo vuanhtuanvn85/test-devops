@@ -16,6 +16,10 @@ services:
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
+      # Tên server để app in vào access log. Ansible điền từ inventory
+      # (web1/web2). Dấu ":-" = giá trị mặc định nếu biến chưa đặt, nên
+      # chạy tay ở laptop không cần khai báo gì.
+      SERVER_NAME: ${SERVER_NAME:-laptop}
     depends_on:
       db:
         # Chờ db thực sự sẵn sàng nhận kết nối, không chỉ chờ container khởi động.
